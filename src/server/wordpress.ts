@@ -176,25 +176,10 @@ export function wordpressRouter(
       grant_type: "authorization_code",
       redirect_uri: c.origin + "/api/wordpress/callback",
     };
-    // Fail closed: EMA versions may accept but ignore PKCE. A bad verifier must be rejected.
-    const probe = await post("/oauth/token", {
-      ...body,
-      code_verifier: token(),
-    });
-    if (probe.response.ok && probe.data.access_token) {
-      await post("/oauth/revoke", {
-        ...client,
-        token: probe.data.access_token,
-      }).catch(() => undefined);
-      db.audit("wordpress-pkce-not-enforced");
-      res.redirect("/?connection=pkce-required");
-      return;
-    }
-    if (probe.data.error !== "code_verifier_mismatch")
-      throw new HttpError(
-        502,
-        "WordPress PKCE verification could not be established. Connection was not saved.",
-      );
+    // This is a confidential server client: authenticate with its stored secret
+    // and validate one-use, session-bound state above. Send the genuine PKCE
+    // verifier once; official EMA currently ignores it, while newer servers may
+    // enforce it. Never probe with a bad verifier or retry without PKCE.
     const exchange = await post("/oauth/token", {
       ...body,
       code_verifier: verifier,

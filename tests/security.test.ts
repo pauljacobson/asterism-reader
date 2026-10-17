@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { configuration } from "../src/server/config.js";
 import { createApp } from "../src/server/app.js";
@@ -252,19 +253,100 @@ test("stale verification blocks sensitive changes and revoked sessions stop work
     await h.finish();
   }
 });
-test("PKCE-ignoring upstream is revoked and never stored", async () => {
-  const calls: string[] = [];
-  const fake = async (input: any) => {
-    const u = String(input);
-    calls.push(u);
-    return new Response(
-      JSON.stringify(
-        u.endsWith("/oauth/token") ? { access_token: "rejected-token" } : {},
-      ),
-      { status: 200, headers: { "content-type": "application/json" } },
-    );
-  };
-  const h = await harness(fake as typeof fetch);
+// Both official EMA (which ignores PKCE) and enforcing servers must receive
+// exactly one genuine exchange. Never spend a user's code on a negative probe.
+for (const enforcesPkce of [false, true]) {
+  test(`OAuth connects with a ${enforcesPkce ? "PKCE-enforcing" : "legacy EMA"} server and keeps credentials private`, async () => {
+    let challenge = "";
+    let attempts = 0;
+    const calls: string[] = [];
+    const fake = async (input: any, options: any) => {
+      const u = String(input);
+      calls.push(u);
+      assert.equal(options.redirect, "error");
+      if (u.endsWith("/api/v1/apps")) {
+        const body = new URLSearchParams(options.body);
+        assert.equal(
+          body.get("redirect_uris"),
+          env.APP_ORIGIN + "/api/wordpress/callback",
+        );
+        return Response.json({
+          client_id: "client",
+          client_secret: "private-secret",
+        });
+      }
+      if (u.endsWith("/oauth/token")) {
+        attempts++;
+        const body = new URLSearchParams(options.body);
+        assert.equal(body.get("client_secret"), "private-secret");
+        assert.equal(body.get("grant_type"), "authorization_code");
+        assert.equal(
+          body.get("redirect_uri"),
+          env.APP_ORIGIN + "/api/wordpress/callback",
+        );
+        const actual = createHash("sha256")
+          .update(body.get("code_verifier") || "")
+          .digest("base64url");
+        if (enforcesPkce && actual !== challenge)
+          return Response.json(
+            { error: "code_verifier_mismatch" },
+            { status: 400 },
+          );
+        return Response.json({ access_token: "private-token" });
+      }
+      if (u.endsWith("/api/v1/accounts/verify_credentials")) {
+        assert.equal(options.headers.Authorization, "Bearer private-token");
+        return Response.json({ id: "10", display_name: "Reader", acct: "reader" });
+      }
+      throw new Error("Unexpected upstream request " + u);
+    };
+    const h = await harness(fake as typeof fetch);
+    try {
+      h.seed();
+      const { data } = await h.request("/wordpress/connect", {});
+      const auth = new URL(data.url);
+      const state = auth.searchParams.get("state");
+      challenge = auth.searchParams.get("code_challenge")!;
+      assert.equal(auth.searchParams.get("code_challenge_method"), "S256");
+      assert.ok(!data.url.includes("private-secret"));
+      const result = await h.request(
+        "/wordpress/callback?code=code&state=" + state,
+      );
+      assert.equal(
+        result.response.headers.get("location"),
+        "/?connection=success",
+      );
+      assert.equal(attempts, 1);
+      assert.equal(
+        calls.filter((url) => url.endsWith("/oauth/revoke")).length,
+        0,
+      );
+      const session = await h.refresh();
+      assert.equal(session.connection.id, "10");
+      assert.ok(!JSON.stringify(session).includes("private-token"));
+      assert.ok(!JSON.stringify(session).includes("private-secret"));
+      const stored = h.db.get(
+        "SELECT value FROM secrets WHERE name='connection'",
+      )!.value;
+      assert.ok(!stored.includes("private-token"));
+      assert.equal(unseal<any>(stored, h.c.key).access_token, "private-token");
+      assert.equal(
+        (await h.request("/wordpress/callback?code=code&state=" + state))
+          .response.status,
+        400,
+      );
+      assert.equal(attempts, 1);
+    } finally {
+      await h.finish();
+    }
+  });
+}
+test("OAuth rejects missing, wrong-session, superseded, expired and declined state before token exchange", async () => {
+  let calls = 0;
+  const h = await harness((async () => {
+    calls++;
+    return Response.json({});
+  }) as typeof fetch);
   try {
     h.seed();
     h.db.run(
@@ -272,82 +354,96 @@ test("PKCE-ignoring upstream is revoked and never stored", async () => {
       "client",
       seal({ client_id: "client", client_secret: "secret" }, h.c.key),
     );
-    const { data } = await h.request("/wordpress/connect", {});
-    const state = new URL(data.url).searchParams.get("state");
-    const result = await h.request(
-      "/wordpress/callback?code=code&state=" + state,
-    );
+    const begin = async () =>
+      new URL(
+        (await h.request("/wordpress/connect", {})).data.url,
+      ).searchParams.get("state")!;
+    const callback = (state: string) =>
+      h.request("/wordpress/callback?code=code&state=" + state);
     assert.equal(
-      result.response.headers.get("location"),
-      "/?connection=pkce-required",
+      (await h.request("/wordpress/callback?code=code")).response.status,
+      400,
     );
-    assert.ok(calls.some((x) => x.endsWith("/oauth/revoke")));
+    assert.equal((await callback("wrong")).response.status, 400);
+    const other = await begin();
+    h.db.run(
+      "INSERT INTO sessions SELECT 'another-browser',uid,phase,csrf,recent,created,touched,expires,recovery_key FROM sessions LIMIT 1",
+    );
+    h.db.run(
+      "UPDATE challenges SET session='another-browser' WHERE id=?",
+      hash(other),
+    );
+    assert.equal((await callback(other)).response.status, 400);
+    const old = await begin();
+    const current = await begin();
+    assert.equal((await callback(old)).response.status, 400);
+    h.db.run("UPDATE challenges SET expires=0 WHERE id=?", hash(current));
+    assert.equal((await callback(current)).response.status, 400);
+    const declined = await begin();
+    assert.equal(
+      (
+        await h.request(
+          "/wordpress/callback?error=access_denied&state=" + declined,
+        )
+      ).response.headers.get("location"),
+      "/?connection=declined",
+    );
+    assert.equal((await callback(declined)).response.status, 400);
+    assert.equal(calls, 0);
     assert.equal(
       h.db.get("SELECT value FROM secrets WHERE name='connection'"),
       undefined,
-    );
-    assert.equal(
-      (await h.request("/wordpress/callback?code=code&state=" + state)).response
-        .status,
-      400,
     );
   } finally {
     await h.finish();
   }
 });
-test("PKCE-aware upstream connects with the right verifier and keeps token server-side", async () => {
-  let attempts = 0;
-  const fake = async (input: any, options: any) => {
-    const u = String(input);
-    if (u.endsWith("/oauth/token")) {
-      attempts++;
-      return new Response(
-        JSON.stringify(
-          attempts === 1
-            ? { error: "code_verifier_mismatch" }
-            : { access_token: "protected-token" },
-        ),
-        { status: attempts === 1 ? 400 : 200 },
+test("OAuth token errors are never retried without PKCE and identity failures revoke the new token", async () => {
+  for (const identityFailure of [false, true]) {
+    const calls: string[] = [];
+    const h = await harness((async (input: any) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.endsWith("/oauth/token"))
+        return identityFailure
+          ? Response.json({ access_token: "unverified-token" })
+          : Response.json({ error: "code_verifier_mismatch" }, { status: 400 });
+      if (url.endsWith("/api/v1/accounts/verify_credentials"))
+        return Response.json({}, { status: 401 });
+      if (url.endsWith("/oauth/revoke")) return Response.json({});
+      throw new Error("Unexpected upstream request " + url);
+    }) as typeof fetch);
+    try {
+      h.seed();
+      h.db.run(
+        "INSERT INTO secrets VALUES(?,?)",
+        "client",
+        seal({ client_id: "client", client_secret: "secret" }, h.c.key),
       );
+      const auth = new URL(
+        (await h.request("/wordpress/connect", {})).data.url,
+      );
+      const state = auth.searchParams.get("state");
+      assert.equal(
+        (await h.request("/wordpress/callback?code=code&state=" + state))
+          .response.status,
+        502,
+      );
+      assert.equal(
+        calls.filter((url) => url.endsWith("/oauth/token")).length,
+        1,
+      );
+      assert.equal(
+        calls.filter((url) => url.endsWith("/oauth/revoke")).length,
+        identityFailure ? 1 : 0,
+      );
+      assert.equal(
+        h.db.get("SELECT value FROM secrets WHERE name='connection'"),
+        undefined,
+      );
+    } finally {
+      await h.finish();
     }
-    if (u.includes("verify_credentials"))
-      return new Response(
-        JSON.stringify({ id: "10", display_name: "Reader", acct: "reader" }),
-      );
-    return new Response("[]");
-  };
-  const h = await harness(fake as typeof fetch);
-  try {
-    h.seed();
-    h.db.run(
-      "INSERT INTO secrets VALUES(?,?)",
-      "client",
-      seal({ client_id: "client", client_secret: "secret" }, h.c.key),
-    );
-    const { data } = await h.request("/wordpress/connect", {});
-    const state = new URL(data.url).searchParams.get("state");
-    const result = await h.request(
-      "/wordpress/callback?code=code&state=" + state,
-    );
-    assert.equal(
-      result.response.headers.get("location"),
-      "/?connection=success",
-    );
-    const session = await h.refresh();
-    assert.equal(session.connection.id, "10");
-    assert.ok(!JSON.stringify(session).includes("protected-token"));
-    assert.ok(
-      !h.db
-        .get("SELECT value FROM secrets WHERE name='connection'")!
-        .value.includes("protected-token"),
-    );
-    assert.equal(
-      (await h.request("/wordpress/callback?code=code&state=wrong")).response
-        .status,
-      400,
-    );
-  } finally {
-    await h.finish();
   }
 });
 test("pending recovery passkeys cannot sign in before new backup codes are confirmed", async () => {
