@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Asterism Reader</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/style.css" />
+    <script type="module" src="/app.js"></script>
+  </head>
+  <body>
+    <header class="top">
+      <div class="brand">
+        <span class="mark">⁂</span>Asterism <span>Reader</span>
+      </div>
+      <nav aria-label="Main navigation"></nav>
+      <div class="top-tools" hidden>
+        <button
+          class="icon-button"
+          data-page="preferences"
+          aria-label="Preferences"
+        >
+          Aa</button
+        ><button class="icon-button" data-page="account" aria-label="Account">
+          SR
+        </button>
+      </div>
+    </header>
+    <div id="status-message" role="status"></div>
+    <main id="main" tabindex="-1"><p>Opening your reader…</p></main>
+    <nav class="mobile-nav" aria-label="Mobile navigation" hidden></nav>
+    <dialog id="modal" aria-labelledby="modal-title">
+      <div class="dialog-top">
+        <h2 id="modal-title"></h2>
+        <button class="dialog-close" aria-label="Close dialog">×</button>
+      </div>
+      <div class="dialog-body"></div>
+    </dialog>
+    <div class="toast" role="status" hidden></div>
+  </body>
+</html>

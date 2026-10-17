@@ -1,0 +1,38 @@
+{
+  "name": "asterism-reader",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "build": "tsc && node scripts/build.mjs",
+    "start": "node --env-file-if-exists=.env dist/server/index.js",
+    "dev": "npm run build && npm start",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.ts",
+    "setup:local": "node scripts/init-local.mjs",
+    "backup": "node --env-file-if-exists=.env scripts/backup.mjs",
+    "format": "prettier --write src tests scripts public package.json tsconfig.json",
+    "format:check": "prettier --check src tests scripts public package.json tsconfig.json"
+  },
+  "dependencies": {
+    "@simplewebauthn/browser": "^14.0.0",
+    "@simplewebauthn/server": "^14.0.3",
+    "cookie-parser": "^1.4.7",
+    "dompurify": "^3.4.17",
+    "express": "^5.3.0",
+    "helmet": "^8.3.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "esbuild": "^0.28.2",
+    "prettier": "^3.9.10",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

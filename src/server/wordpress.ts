@@ -1,0 +1,389 @@
+import { Router } from "express";
+import { z } from "zod";
+import { createHash } from "node:crypto";
+import type { Store } from "./store.js";
+import type { Config } from "./config.js";
+import { security, token, hash, seal, unseal, HttpError } from "./security.js";
+const scopes =
+  "read write:follows write:favourites write:bookmarks write:statuses";
+type Client = { client_id: string; client_secret: string };
+type Connection = {
+  access_token: string;
+  account: { id: string; display_name: string; acct: string };
+};
+// Only the configured WordPress origin is fetched. Redirects cannot leak bearer credentials.
+export async function wordpressRequest(
+  c: Config,
+  path: string,
+  init: RequestInit = {},
+  fetcher: typeof fetch = fetch,
+) {
+  if (!path.startsWith("/") || path.startsWith("//"))
+    throw new Error("Invalid upstream path");
+  const response = await fetcher(c.wordpress + path, {
+    ...init,
+    redirect: "error",
+    signal: AbortSignal.timeout(20_000),
+  });
+  const reader = response.body?.getReader();
+  let size = 0;
+  const chunks: Uint8Array[] = [];
+  if (reader) {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > 5_000_000) {
+        await reader.cancel();
+        throw new HttpError(502, "The site returned too much data.");
+      }
+      chunks.push(value);
+    }
+  }
+  let data: any;
+  try {
+    data = JSON.parse(Buffer.concat(chunks).toString());
+  } catch {
+    throw new HttpError(502, "The site returned an unexpected response.");
+  }
+  return { response, data };
+}
+export function wordpressRouter(
+  db: Store,
+  c: Config,
+  sec: ReturnType<typeof security>,
+  fetcher: typeof fetch = fetch,
+) {
+  const r = Router();
+  r.use(sec.full);
+  const getSecret = <T>(name: string) => {
+    const row = db.get("SELECT value FROM secrets WHERE name=?", name);
+    return row ? unseal<T>(row.value, c.key) : null;
+  };
+  const putSecret = (name: string, value: unknown) =>
+    db.run(
+      "INSERT INTO secrets VALUES(?,?) ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+      name,
+      seal(value, c.key),
+    );
+  const call = (path: string, init: RequestInit = {}) =>
+    wordpressRequest(c, path, init, fetcher);
+  const post = (path: string, body: Record<string, string>) =>
+    call(path, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(body),
+    });
+  async function api(path: string, method = "GET", body?: unknown) {
+    const conn = getSecret<Connection>("connection");
+    if (!conn)
+      throw new HttpError(409, "Connect your WordPress site in Account first.");
+    const { response, data } = await call(path, {
+      method,
+      headers: {
+        Authorization: "Bearer " + conn.access_token,
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+    if (response.status === 401) {
+      db.run("DELETE FROM secrets WHERE name='connection'");
+      throw new HttpError(
+        401,
+        "WordPress authorization expired. Reconnect in Account.",
+      );
+    }
+    if (!response.ok)
+      throw new HttpError(
+        502,
+        method === "GET"
+          ? "WordPress could not load this content. Try again."
+          : "WordPress could not confirm this action. Refresh its state before retrying.",
+      );
+    return { data, link: response.headers.get("link") };
+  }
+  r.post("/connect", async (req, res) => {
+    sec.fresh(req.session);
+    sec.limit("oauth-connect", 10);
+    let client = getSecret<Client>("client");
+    if (!client) {
+      const { response, data } = await post("/api/v1/apps", {
+        client_name: "Asterism Reader",
+        redirect_uris: c.origin + "/api/wordpress/callback",
+        scopes,
+        website: c.origin,
+      });
+      if (!response.ok || !data.client_id || !data.client_secret)
+        throw new HttpError(502, "WordPress could not register Asterism.");
+      client = {
+        client_id: String(data.client_id),
+        client_secret: String(data.client_secret),
+      };
+      sec.alive(req.session);
+      putSecret("client", client);
+    }
+    const state = token(),
+      verifier = token(),
+      pkce = createHash("sha256").update(verifier).digest("base64url");
+    db.run(
+      "DELETE FROM challenges WHERE session=? AND purpose=?",
+      req.session.hash,
+      "oauth",
+    );
+    db.run(
+      "INSERT INTO challenges VALUES(?,?,?,?,?)",
+      hash(state),
+      req.session.hash,
+      "oauth",
+      seal({ verifier }, c.key),
+      Date.now() + 600_000,
+    );
+    const url = new URL(c.wordpress + "/oauth/authorize");
+    url.search = new URLSearchParams({
+      client_id: client.client_id,
+      redirect_uri: c.origin + "/api/wordpress/callback",
+      response_type: "code",
+      scope: scopes,
+      state,
+      code_challenge: pkce,
+      code_challenge_method: "S256",
+    }).toString();
+    res.json({ url: url.toString() });
+  });
+  r.get("/callback", async (req, res) => {
+    const state = z.string().max(200).parse(req.query.state);
+    const row = db.get(
+      "DELETE FROM challenges WHERE id=? AND session=? AND purpose=? RETURNING data,expires",
+      hash(state),
+      req.session.hash,
+      "oauth",
+    );
+    if (!row || row.expires < Date.now())
+      throw new HttpError(
+        400,
+        "WordPress connection expired. Start again from Account.",
+      );
+    if (req.query.error) {
+      res.redirect("/?connection=declined");
+      return;
+    }
+    const code = z.string().max(2000).parse(req.query.code),
+      { verifier } = unseal<{ verifier: string }>(row.data, c.key),
+      client = getSecret<Client>("client")!;
+    const body = {
+      ...client,
+      code,
+      grant_type: "authorization_code",
+      redirect_uri: c.origin + "/api/wordpress/callback",
+    };
+    // Fail closed: EMA versions may accept but ignore PKCE. A bad verifier must be rejected.
+    const probe = await post("/oauth/token", {
+      ...body,
+      code_verifier: token(),
+    });
+    if (probe.response.ok && probe.data.access_token) {
+      await post("/oauth/revoke", {
+        ...client,
+        token: probe.data.access_token,
+      }).catch(() => undefined);
+      db.audit("wordpress-pkce-not-enforced");
+      res.redirect("/?connection=pkce-required");
+      return;
+    }
+    if (probe.data.error !== "code_verifier_mismatch")
+      throw new HttpError(
+        502,
+        "WordPress PKCE verification could not be established. Connection was not saved.",
+      );
+    const exchange = await post("/oauth/token", {
+      ...body,
+      code_verifier: verifier,
+    });
+    if (!exchange.response.ok || !exchange.data.access_token)
+      throw new HttpError(502, "WordPress could not authorize the connection.");
+    const accessToken = String(exchange.data.access_token);
+    try {
+      const account = await call("/api/v1/accounts/verify_credentials", {
+        headers: { Authorization: "Bearer " + accessToken },
+      });
+      if (!account.response.ok || !account.data.id)
+        throw new HttpError(
+          502,
+          "Could not verify the connected WordPress identity.",
+        );
+      sec.alive(req.session);
+      putSecret("connection", {
+        access_token: accessToken,
+        account: {
+          id: String(account.data.id),
+          display_name: String(account.data.display_name || ""),
+          acct: String(account.data.acct || ""),
+        },
+      });
+      db.audit("wordpress-connected");
+      res.redirect("/?connection=success");
+    } catch (e) {
+      await post("/oauth/revoke", { ...client, token: accessToken }).catch(
+        () => undefined,
+      );
+      throw e;
+    }
+  });
+  r.post("/disconnect", async (req, res) => {
+    sec.fresh(req.session);
+    const conn = getSecret<Connection>("connection"),
+      client = getSecret<Client>("client");
+    if (conn && client) {
+      const result = await post("/oauth/revoke", {
+        ...client,
+        token: conn.access_token,
+      });
+      if (!result.response.ok)
+        throw new HttpError(
+          502,
+          "WordPress could not revoke access. Try again.",
+        );
+    }
+    db.run("DELETE FROM secrets WHERE name='connection'");
+    db.audit("wordpress-disconnected");
+    res.json({ ok: true });
+  });
+  const id = (value: unknown) =>
+    z
+      .string()
+      .regex(/^[A-Za-z0-9_:.@-]{1,250}$/)
+      .parse(value);
+  function cursor(link: string | null) {
+    if (!link) return null;
+    const match = link.match(/<([^>]+)>;\s*rel="next"/);
+    if (!match) return null;
+    try {
+      const url = new URL(match[1]);
+      if (url.origin !== c.wordpress) return null;
+      return url.searchParams.get("max_id") || null;
+    } catch {
+      return null;
+    }
+  }
+  r.get("/feed", async (req, res) => {
+    const query = new URLSearchParams({ limit: "30" });
+    if (req.query.cursor) query.set("max_id", id(req.query.cursor));
+    const path =
+      req.query.saved === "true"
+        ? "/api/v1/bookmarks"
+        : "/api/v1/timelines/home";
+    const result = await api(path + "?" + query);
+    res.json({
+      posts: Array.isArray(result.data) ? result.data : [],
+      next: cursor(result.link),
+    });
+  });
+  r.get("/following", async (req, res) => {
+    const conn = getSecret<Connection>("connection");
+    if (!conn) throw new HttpError(409, "Connect WordPress first.");
+    const result = await api(
+      "/api/v1/accounts/" +
+        encodeURIComponent(conn.account.id) +
+        "/following?limit=80" +
+        (req.query.cursor
+          ? "&max_id=" + encodeURIComponent(id(req.query.cursor))
+          : ""),
+    );
+    res.json({ accounts: result.data, next: cursor(result.link) });
+  });
+  r.get("/search", async (req, res) => {
+    const q = z.string().trim().min(1).max(200).parse(req.query.q),
+      type = z
+        .enum(["accounts", "statuses", "hashtags"])
+        .parse(req.query.type || "statuses");
+    const result = await api(
+      "/api/v2/search?" +
+        new URLSearchParams({
+          q,
+          type,
+          limit: "40",
+          resolve: type === "accounts" ? "true" : "false",
+        }),
+    );
+    res.json(result.data);
+  });
+  r.get("/tag/:tag", async (req, res) => {
+    const tag = z
+      .string()
+      .max(100)
+      .regex(/^[\p{L}\p{N}_]+$/u)
+      .parse(req.params.tag);
+    const result = await api(
+      "/api/v1/timelines/tag/" + encodeURIComponent(tag) + "?limit=40",
+    );
+    res.json({ posts: result.data });
+  });
+  r.get("/post/:id", async (req, res) => {
+    const result = await api(
+      "/api/v1/statuses/" + encodeURIComponent(id(req.params.id)),
+    );
+    res.json(result.data);
+  });
+  r.get("/post/:id/context", async (req, res) => {
+    const result = await api(
+      "/api/v1/statuses/" + encodeURIComponent(id(req.params.id)) + "/context",
+    );
+    res.json(result.data);
+  });
+  r.post("/post/:id/:action", async (req, res) => {
+    sec.limit("write:" + req.session.uid, 60, 60_000);
+    const action = z
+      .enum(["favourite", "unfavourite", "bookmark", "unbookmark"])
+      .parse(req.params.action);
+    res.json(
+      (
+        await api(
+          "/api/v1/statuses/" +
+            encodeURIComponent(id(req.params.id)) +
+            "/" +
+            action,
+          "POST",
+          {},
+        )
+      ).data,
+    );
+  });
+  r.post("/follow", async (req, res) => {
+    sec.limit("follow:" + req.session.uid, 20, 60_000);
+    const accountId = id(req.body.id);
+    res.json(
+      (
+        await api(
+          "/api/v1/accounts/" + encodeURIComponent(accountId) + "/follow",
+          "POST",
+          {},
+        )
+      ).data,
+    );
+  });
+  r.post("/reply", async (req, res) => {
+    sec.limit("reply:" + req.session.uid, 10, 60_000);
+    const b = z
+      .object({ id: z.string(), text: z.string().trim().min(1).max(5000) })
+      .parse(req.body);
+    const original = (
+      await api("/api/v1/statuses/" + encodeURIComponent(id(b.id)))
+    ).data;
+    const visibility = ["public", "unlisted", "private", "direct"].includes(
+      original.visibility,
+    )
+      ? original.visibility
+      : "private";
+    res.json(
+      (
+        await api("/api/v1/statuses", "POST", {
+          status: b.text,
+          in_reply_to_id: b.id,
+          visibility,
+          spoiler_text: original.spoiler_text || "",
+        })
+      ).data,
+    );
+  });
+  return r;
+}

@@ -1,0 +1,54 @@
+--- a/includes/oauth2/class-authorization-code-storage.php
++++ b/includes/oauth2/class-authorization-code-storage.php
+@@ -23,6 +23,8 @@
+ 		'redirect_uri' => 'string', // redirect URI.
+ 		'expires'      => 'int',    // expires as unix timestamp.
+ 		'scope'        => 'string', // scope as space-separated string.
++		'code_challenge' => 'string',
++		'code_challenge_method' => 'string',
+ 	);
+ 
+ 	public function __construct() {
+@@ -76,6 +78,15 @@
+ 		return substr( $scope, 0, 100 );
+ 	}
+ 
++	/** Preserve valid PKCE challenge metadata for the OAuth token verifier. */
++	public static function sanitize_code_challenge( $challenge ) {
++		return is_string( $challenge ) && preg_match( '/^[A-Za-z0-9._~-]{43,128}$/D', $challenge ) ? $challenge : '';
++	}
++
++	public static function sanitize_code_challenge_method( $method ) {
++		return in_array( $method, array( 'S256', 'plain' ), true ) ? $method : '';
++	}
++
+ 	/**
+ 	 * Sanitize the user id.
+ 	 *
+@@ -160,6 +171,8 @@
+ 				'expires'      => 'expires',
+ 				'redirect_uri' => 'redirect_uri',
+ 				'scope'        => 'scope',
++				'code_challenge' => 'code_challenge',
++				'code_challenge_method' => 'code_challenge_method',
+ 			) as $key => $meta_key ) {
+ 				$authorization_code[ $key ] = get_term_meta( $term->term_id, $meta_key, true );
+ 			}
+@@ -190,7 +203,7 @@
+ 	 *
+ 	 * @ingroup oauth2_section_4
+ 	 */
+-	public function setAuthorizationCode( $code, $client_id, $user_id, $redirect_uri, $expires, $scope = null ) {
++	public function setAuthorizationCode( $code, $client_id, $user_id, $redirect_uri, $expires, $scope = null, $nonce = null, $code_challenge = null, $code_challenge_method = null ) {
+ 		if ( $code ) {
+ 			$this->expireAuthorizationCode( $code );
+ 
+@@ -206,6 +219,8 @@
+ 				'redirect_uri' => $redirect_uri,
+ 				'expires'      => $expires,
+ 				'scope'        => $scope,
++				'code_challenge' => $code_challenge,
++				'code_challenge_method' => $code_challenge_method,
+ 			) as $key => $value ) {
+ 				add_term_meta( $term['term_id'], $key, $value );
+ 			}

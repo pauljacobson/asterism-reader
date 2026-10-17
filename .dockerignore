@@ -1,0 +1,12 @@
+.git
+node_modules
+dist
+.env*
+data
+work
+output
+.playwright-cli
+designs
+wordpress.example.com
+wordpress
+tests
