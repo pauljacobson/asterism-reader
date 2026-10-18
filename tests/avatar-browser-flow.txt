@@ -45,8 +45,8 @@ async (page) => {
   }
   await page.locator('.post[data-id="1"] .read-button').click();
   await page.locator('#conversation .avatar-image').waitFor();
-  if (await page.locator('.dialog-body > .author .avatar-image').getAttribute('src') !== image) throw Error('Conversation avatar missing');
-  await page.locator('.dialog-body > .author .avatar-image').click();
+  if (await page.locator('.reader-scroll > .author .avatar-image').getAttribute('src') !== image) throw Error('Conversation avatar missing');
+  await page.locator('.reader-scroll > .author .avatar-image').click();
   await page.getByRole('heading', { name: 'Posts by Static Person', exact: true }).waitFor();
   if (await page.locator('#modal').evaluate(el => el.open)) throw Error('Avatar did not close conversation and open author');
   if (await page.locator('#main > .author .avatar-image').getAttribute('src') !== image) throw Error('Author avatar missing');

@@ -1,0 +1,158 @@
+async (page) => {
+  // Synthetic API responses exercise the production bundle, never a real session.
+  const errors = [], writes = [], sizes = [];
+  page.on('pageerror', e => errors.push(e.message));
+  const account = { id: '20', display_name: 'Sample reader', acct: 'reader@example.social', avatar_static: 'https://images.example.com/avatar.png' };
+  const make = (id, extra = {}) => ({ id: String(id), account, created_at: new Date(Date.UTC(2026, 9, 18, 9, 0) - id * 60000).toISOString(), url: 'https://example.social/posts/' + id, content: '<h2>A little room to read.</h2><p>Thoughtful conversations and discoveries from people you follow. Long posts should be comfortable to read at your chosen size.</p>'.repeat(id === 1 ? 12 : 1), visibility: 'public', media_attachments: [], tags: [{ name: 'curiosity' }], favourites_count: 2, replies_count: 1, ...extra });
+  const posts = Array.from({ length: 12 }, (_, i) => make(i + 1));
+  posts[2].media_attachments = [{ type: 'image', url: 'https://images.example.com/photo.png', preview_url: 'https://images.example.com/photo.png', description: 'Sample image' }];
+  let preferences = { theme: 'dark', font: 'sans', size: 18 };
+  let slowPost = false, slowContext = false, failReply = false, holdReply = false;
+  let releasePost, releaseContext, releaseReply;
+  await page.route('https://images.example.com/**', route => route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64') }));
+  await page.route('**/api/**', async route => {
+    const request = route.request(), path = new URL(request.url()).pathname;
+    if (path === '/api/session') return route.fulfill({ json: { csrf: 'fixture', phase: 'full', hasAccount: true, connection: { id: 'owner', acct: 'reader', display_name: 'Sample Reader' }, preferences, passkeys: [], sessions: [], backupRemaining: 8 } });
+    if (path === '/api/preferences') { preferences = request.postDataJSON(); return route.fulfill({ json: { ok: true } }); }
+    if (path === '/api/wordpress/feed') return route.fulfill({ json: { posts, next: null } });
+    if (path === '/api/wordpress/following') return route.fulfill({ json: { accounts: [account], next: null } });
+    if (path === '/api/wordpress/author/20') return route.fulfill({ json: { account, posts, next: null } });
+    if (path === '/api/wordpress/search') return route.fulfill({ json: { statuses: [posts[0]] } });
+    if (path === '/api/wordpress/reply') {
+      writes.push(request.postDataJSON());
+      if (failReply) return route.fulfill({ status: 502, json: { error: 'WordPress could not confirm this reply.' } });
+      if (holdReply) await new Promise(resolve => releaseReply = resolve);
+      return route.fulfill({ json: { id: 'reply-1' } });
+    }
+    const match = path.match(/^\/api\/wordpress\/post\/(\d+)(\/context|\/favourite|\/bookmark)?$/);
+    if (match) {
+      const id = Number(match[1]), operation = match[2];
+      if (operation === '/context') {
+        if (id === 1 && slowContext) await new Promise(resolve => releaseContext = resolve);
+        return route.fulfill({ json: { ancestors: [], descendants: [make(81, { content: '<p>Conversation for post ' + id + '</p>' })] } });
+      }
+      if (operation) return route.fulfill({ json: { ...posts[id - 1], favourited: operation === '/favourite', bookmarked: operation === '/bookmark', favourites_count: 3 } });
+      if (id === 1 && slowPost) await new Promise(resolve => releasePost = resolve);
+      return route.fulfill({ json: posts[id - 1] });
+    }
+    return route.fulfill({ status: 404, json: { error: 'Unknown fixture route' } });
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('http://127.0.0.1:4322/');
+  await page.locator('.board > .post').last().waitFor();
+  if (await page.locator('body').getAttribute('data-auth') !== 'full') throw Error('App shell not active');
+  await page.locator('.post[data-id="1"] .read-button').click();
+  await page.locator('#reply-text').waitFor();
+  await page.locator('#conversation .result').waitFor();
+  await page.locator('#reply-text').fill('A draft worth keeping');
+  await page.locator('.reader-preferences').click();
+  await page.locator('#reader-font').selectOption('serif');
+  await page.locator('#reader-size').fill('26');
+  await page.locator('#reader-size').dispatchEvent('change');
+  await page.waitForFunction(() => getComputedStyle(document.querySelector('.reader-scroll .post-copy')).fontSize === '26px');
+  await page.locator('.reader-preferences').click();
+  for (const mode of ['dark', 'light']) {
+    await page.locator('.reader-preferences').click();
+    await page.locator('#reader-theme').selectOption(mode);
+    await page.locator('.reader-preferences').click();
+    for (const [width, height] of [[1440, 1000], [1280, 800], [1024, 1366], [820, 1180], [768, 1024], [650, 1000], [600, 900], [390, 844], [320, 640], [844, 390]]) {
+      await page.setViewportSize({ width, height });
+      const state = await page.evaluate(() => {
+        const dialog = document.querySelector('#modal'), r = dialog.getBoundingClientRect(), toolbar = document.querySelector('.reader .dialog-top').getBoundingClientRect(), composer = document.querySelector('#reply-form').getBoundingClientRect();
+        const cards = [...document.querySelectorAll('.board > .post')].slice(0, 4).map(e => { const p = e.getBoundingClientRect(); return { id: e.dataset.id, x: p.x, y: p.y }; });
+        return { width: r.width, left: r.left, top: r.top, bottom: r.bottom, scroll: document.querySelector('.reader-scroll').clientHeight, composerBottom: composer.bottom, toolbarTop: toolbar.top, overflow: dialog.scrollWidth > dialog.clientWidth || document.documentElement.scrollWidth > innerWidth, cards, font: getComputedStyle(document.querySelector('.reader-scroll .post-copy')).fontFamily };
+      });
+      if (state.left < -1 || state.top < -1 || state.bottom > height + 1 || state.width > width + 1 || state.width > 851 || state.overflow || state.scroll < 70 || state.composerBottom > height + 1 || state.toolbarTop < 0) throw Error('Reader bounds ' + JSON.stringify({ width, height, state }));
+      if (width <= 600 && Math.abs(state.width - width) > 1) throw Error('Phone reader not full width');
+      if ([768, 820].includes(width) && state.width / width < .85) throw Error('Tablet reader too narrow');
+      if (state.cards.some((p, i) => p.id !== String(i + 1))) throw Error('Chronology changed');
+      for (let i = 1; i < state.cards.length; i++) {
+        const previous = state.cards[i - 1], current = state.cards[i];
+        if (current.y < previous.y - 1 || (Math.abs(current.y - previous.y) < 1 && current.x <= previous.x)) throw Error('Visible row order changed');
+      }
+      if (!state.font.includes('Georgia')) throw Error('Font preference ignored');
+      sizes.push({ mode, viewport: [width, height], readerWidth: state.width, readingHeight: state.scroll });
+    }
+  }
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.locator('.dialog-close').click();
+  await page.locator('.post[data-id="7"] .read-button').scrollIntoViewIfNeeded();
+  const before = await page.evaluate(() => ({ scroll: scrollY, width: document.querySelector('.board').getBoundingClientRect().width }));
+  await page.locator('.post[data-id="7"] .read-button').click();
+  await page.locator('#reply-text').waitFor();
+  if (Math.abs(await page.locator('.board').evaluate(e => e.getBoundingClientRect().width) - before.width) > 1) throw Error('Feed reflowed');
+  await page.locator('.reader-scroll').evaluate(e => e.scrollTop = e.scrollHeight);
+  await page.keyboard.press('Escape');
+  const after = await page.evaluate(() => ({ scroll: scrollY, id: document.activeElement.dataset.id }));
+  if (Math.abs(after.scroll - before.scroll) > 1 || after.id !== '7') throw Error('Scroll or focus lost');
+  await page.locator('.post[data-id="1"] .read-button').click();
+  await page.locator('#reply-text').waitFor();
+  if (await page.locator('#reply-text').inputValue() !== 'A draft worth keeping') throw Error('Draft lost');
+  // Native dialogs can yield Tab to the browser chrome, never to the inert feed.
+  for (let i = 0; i < 15; i++) { await page.keyboard.press('Tab'); if (!await page.evaluate(() => !document.hasFocus() || document.querySelector('#modal').contains(document.activeElement))) throw Error('Focus escaped dialog'); }
+  await page.mouse.click(20, 200);
+  await page.waitForFunction(() => !document.querySelector('#modal').open);
+  // Slow post/context responses cannot resurrect dismissed posts or overwrite another.
+  slowPost = true;
+  await page.locator('.post[data-id="1"] .read-button').click();
+  await page.getByText('Loading post…', { exact: true }).waitFor();
+  await page.keyboard.press('Escape');
+  await page.locator('.post[data-id="2"] .read-button').click();
+  await page.locator('#reply-text[data-id="2"]').waitFor();
+  releasePost(); slowPost = false;
+  await page.waitForResponse(r => new URL(r.url()).pathname === '/api/wordpress/post/1');
+  if (await page.locator('#reply-text').getAttribute('data-id') !== '2') throw Error('Late post replaced reader');
+  await page.locator('.reader-back').click();
+  slowContext = true;
+  await page.locator('.post[data-id="1"] .read-button').click();
+  await page.locator('#reply-text[data-id="1"]').waitFor();
+  await page.keyboard.press('Escape');
+  await page.locator('.post[data-id="2"] .read-button').click();
+  await page.locator('#conversation').getByText('Conversation for post 2').waitFor();
+  releaseContext(); slowContext = false;
+  await page.waitForResponse(r => new URL(r.url()).pathname === '/api/wordpress/post/1/context');
+  if (!await page.locator('#conversation').textContent().then(x => x.includes('post 2'))) throw Error('Late context replaced conversation');
+  failReply = true;
+  await page.locator('#reply-text').fill('Keep this if sending fails');
+  await page.getByRole('button', { name: 'Send reply', exact: true }).click();
+  await page.getByRole('alert').getByText('WordPress could not confirm this reply.').waitFor();
+  if (await page.locator('#reply-text').inputValue() !== 'Keep this if sending fails') throw Error('Failure discarded draft');
+  failReply = false; holdReply = true;
+  await page.getByRole('button', { name: 'Send reply', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await page.locator('.post[data-id="3"] .read-button').click();
+  await page.locator('#reply-text[data-id="3"]').waitFor();
+  releaseReply(); holdReply = false;
+  await page.waitForResponse(r => new URL(r.url()).pathname === '/api/wordpress/reply' && r.status() === 200);
+  if (await page.locator('#reply-text').getAttribute('data-id') !== '3') throw Error('Late reply closed another post');
+  // Record the selected design with normal reading preferences.
+  await page.locator('.reader-preferences').click();
+  await page.locator('#reader-font').selectOption('sans');
+  await page.locator('#reader-size').fill('18');
+  await page.locator('#reader-size').dispatchEvent('change');
+  await page.locator('#reader-theme').selectOption('dark');
+  await page.locator('.reader-preferences').click();
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.screenshot({ path: 'output/playwright/orbit-live-reader-desktop.png' });
+  await page.setViewportSize({ width: 820, height: 1180 });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.screenshot({ path: 'output/playwright/orbit-live-reader-tablet.png' });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.screenshot({ path: 'output/playwright/orbit-live-reader-mobile.png' });
+  await page.locator('.dialog-close').click();
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.evaluate(() => scrollTo(0, 0));
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await page.screenshot({ path: 'output/playwright/orbit-live-feed-desktop.png' });
+  await page.locator('#quick-search').fill('curiosity');
+  await page.getByRole('button', { name: 'Search feed', exact: true }).click();
+  await page.locator('#search-results .post').waitFor();
+  if (await page.locator('#search-input').inputValue() !== 'curiosity') throw Error('Quick search failed');
+  await page.getByRole('button', { name: 'Saved', exact: true }).first().click();
+  await page.locator('.chip[data-view="Saved"][aria-pressed="true"]').waitFor();
+  await page.getByRole('button', { name: 'Feed', exact: true }).first().click();
+  await page.locator('.chip[data-view="All"][aria-pressed="true"]').waitFor();
+  if (errors.length) throw Error('Browser errors: ' + errors.join(', '));
+  return { sizes, draftsKept: true, focusAndScrollRestored: true, backgroundWidthPreserved: true, staleResponsesIgnored: true, replyFailureAndRaceSafe: true, quickSearch: true, savedNavigation: true, writes };
+}

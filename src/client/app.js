@@ -73,6 +73,10 @@ const shapes = {
   save: '<path d="M6 3h12v18l-6-4-6 4z"/>',
   reply: '<path d="M21 11a8 8 0 0 1-8 8H7l-5 3 2-6a8 8 0 1 1 17-5z"/>',
   grid: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
+  settings:
+    '<path d="M3 6h18M3 18h18"/><circle cx="9" cy="6" r="3"/><circle cx="16" cy="18" r="3"/>',
+  account:
+    '<circle cx="12" cy="8" r="4"/><path d="M4 22v-2a8 8 0 0 1 16 0v2"/>',
 };
 const ico = (k) =>
   `<svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6">${shapes[k] || shapes.grid}</svg>`;
@@ -97,7 +101,10 @@ let session,
   authorCursor = null,
   authorLoading = false,
   authorError = "",
-  authorSeq = 0;
+  authorSeq = 0,
+  modalSeq = 0,
+  modalScroll = 0,
+  modalOverflow = "";
 let invite = new URLSearchParams(location.hash.slice(1)).get("setup") || "";
 const connectionNotice = new URLSearchParams(location.search).get("connection");
 if (invite || location.search)
@@ -167,6 +174,9 @@ function heading(k, t, s, action = "") {
 }
 function navigation() {
   const full = session.phase === "full";
+  document.body.dataset.auth = full ? "full" : "limited";
+  $(".app-toolbar").hidden = !full;
+  $(".sidebar-bottom").hidden = !full;
   $(".top-tools").hidden = !full;
   $(".mobile-nav").hidden = !full;
   const items = [
@@ -178,15 +188,34 @@ function navigation() {
     ? items
         .map(
           ([id, icon, label]) =>
-            `<button class="nav-button" data-page="${id}" ${page === id || (page === "author" && id === "feed") ? 'aria-current="page"' : ""}>${ico(icon)}${label}</button>`,
+            `<button class="nav-button" data-page="${id}" aria-label="${label}" ${(page === id || (page === "author" && id === "feed")) && !(id === "feed" && page === "feed" && view === "Saved") ? 'aria-current="page"' : ""}>${ico(icon)}<span class="nav-label">${label}</span></button>`,
         )
         .join("")
     : "";
+  if (full) {
+    $(".top nav").insertAdjacentHTML(
+      "beforeend",
+      `<button class="nav-button" data-do="saved-feed" aria-label="Saved" ${page === "feed" && view === "Saved" ? 'aria-current="page"' : ""}>${ico("save")}<span class="nav-label">Saved</span></button>`,
+    );
+    const name =
+      session.connection?.display_name ||
+      session.connection?.acct ||
+      "Your account";
+    const initials = name
+      .split(/\s+/)
+      .slice(0, 2)
+      .map((word) => word[0])
+      .join("")
+      .toUpperCase();
+    $("#account-shortcut").textContent = initials;
+    $(".sidebar-bottom").innerHTML =
+      `<button class="nav-button" data-page="preferences" aria-label="Preferences" ${page === "preferences" ? 'aria-current="page"' : ""}>${ico("settings")}<span class="nav-label">Preferences</span></button><button class="nav-button" data-page="account" aria-label="Account" ${page === "account" ? 'aria-current="page"' : ""}>${ico("account")}<span class="nav-label">Account</span></button><div class="account-summary"><span class="avatar">${esc(initials)}</span><div><strong>${esc(name)}</strong><small>${session.connection ? "WordPress connected" : "WordPress not connected"}</small></div></div>`;
+  } else $(".sidebar-bottom").replaceChildren();
   $(".mobile-nav").innerHTML = full
     ? [
         ...items,
-        ["account", "grid", "Account"],
-        ["preferences", "grid", "Preferences"],
+        ["preferences", "settings", "Preferences"],
+        ["account", "account", "Account"],
       ]
         .map(
           ([id, icon, label]) =>
@@ -479,7 +508,6 @@ function feed() {
       "Your daily constellation",
       "Follow your curiosity.",
       "The latest from your corner of the Fediverse.",
-      button(`${ico("people")} Follow someone`, "follow"),
     ) +
     `<div class="tool-row"><div class="chips">${["All", "Photos", "Saved"].map((x) => `<button class="chip" data-view="${x}" aria-pressed="${view === x}">${x}</button>`).join("")}</div>${button("Refresh", "refresh")}</div>${!session.connection ? emptyConnection() : list.length ? `<div class="board">${list.map(card).join("")}</div>` : '<div class="empty">No posts loaded here. Refresh your feed or try another view.</div>'}${cursor ? `<div class="load-more">${button("Load older posts", "more-feed")}</div>` : ""}`
   );
@@ -490,7 +518,6 @@ function peopleView() {
       "Your orbit",
       "People you follow.",
       "Follows managed by your WordPress site.",
-      button("Follow someone", "follow"),
     ) +
     (!session.connection
       ? emptyConnection()
@@ -682,30 +709,83 @@ async function loadPeople(more = false) {
   peopleCursor = result.next;
   if (page === "people") render();
 }
-function modal(title, html) {
-  if (!$("#modal").open) {
-    lastFocus = document.activeElement;
-    $("#modal").showModal();
-    document.body.style.overflow = "hidden";
-  }
+function fillModal(title, html) {
   $("#modal-title").textContent = title;
   $(".dialog-body").innerHTML = html;
   observePreviews($(".dialog-body"));
-  $(".dialog-close").focus();
+}
+function syncReadingControls() {
+  for (const id of ["font-choice", "reader-font"])
+    if ($("#" + id)) $("#" + id).value = prefs.font;
+  for (const id of ["text-size", "reader-size"])
+    if ($("#" + id)) $("#" + id).value = prefs.size;
+  for (const id of ["size-value", "reader-size-value"])
+    if ($("#" + id)) $("#" + id).textContent = prefs.size + " px";
+  $("#reader-theme").value = prefs.theme;
+}
+function modal(title, html, reader = false) {
+  const dialog = $("#modal");
+  const seq = ++modalSeq;
+  if (!$("#modal").open) {
+    lastFocus = document.activeElement;
+    modalScroll = window.scrollY;
+    modalOverflow = document.body.style.overflow;
+  }
+  dialog.classList.toggle("reader", reader);
+  $(".reader-back").hidden = !reader;
+  $(".reader-preferences").hidden = !reader;
+  $("#reader-settings").hidden = true;
+  $(".reader-preferences").setAttribute("aria-expanded", "false");
+  fillModal(title, html);
+  syncReadingControls();
+  if (!dialog.open) {
+    dialog.showModal();
+    document.body.style.overflow = "hidden";
+  }
+  if (reader) $("#modal-title").focus({ preventScroll: true });
+  else $(".dialog-close").focus({ preventScroll: true });
+  return seq;
 }
 function close() {
+  if (!$("#modal").open) return;
+  // Invalidate in-flight post/context requests before restoring the feed.
+  modalSeq++;
   if ($("#reply-text"))
     drafts.set($("#reply-text").dataset.id, $("#reply-text").value);
   $("#modal").close();
   $(".dialog-body").replaceChildren();
   codes = [];
-  document.body.style.overflow = "";
-  if (lastFocus?.isConnected) lastFocus.focus();
+  document.body.style.overflow = modalOverflow;
+  window.scrollTo(0, modalScroll);
+  if (lastFocus?.isConnected) lastFocus.focus({ preventScroll: true });
 }
 $(".dialog-close").onclick = close;
 $("#modal").addEventListener("cancel", (e) => {
   e.preventDefault();
   close();
+});
+let backdropPointer = false;
+function outsideDialog(event) {
+  const r = $("#modal").getBoundingClientRect();
+  return (
+    event.clientX < r.left ||
+    event.clientX > r.right ||
+    event.clientY < r.top ||
+    event.clientY > r.bottom
+  );
+}
+$("#modal").addEventListener("pointerdown", (event) => {
+  // Only dismiss the reader, and only for a click that started outside it.
+  // Dragging a text selection out of the dialog must not dismiss a draft.
+  backdropPointer =
+    $("#modal").classList.contains("reader") &&
+    event.target === $("#modal") &&
+    outsideDialog(event);
+});
+$("#modal").addEventListener("click", (event) => {
+  if (backdropPointer && event.target === $("#modal") && outsideDialog(event))
+    close();
+  backdropPointer = false;
 });
 async function authenticate(reauth = false) {
   const data = await api("/auth/login/options", { reauth });
@@ -741,17 +821,36 @@ async function showCodes() {
   );
 }
 async function openPost(id) {
-  const p = await api("/wordpress/post/" + encodeURIComponent(id));
-  known.set(String(p.id), p);
-  modal(
-    "A conversation",
-    `${author(p.account, p.created_at, p.url || p.uri)}${body(p, true)}${actions(p)}<div id="conversation"><p class="muted">Loading conversation…</p></div><form id="reply-form" data-id="${esc(p.id)}"><label class="control-label" for="reply-text">Reply as ${esc(session.connection?.acct)}</label><textarea id="reply-text" data-id="${esc(p.id)}" required maxlength="5000">${esc(drafts.get(String(p.id)) || "")}</textarea><p class="muted">Visibility follows the original post: ${esc(p.visibility || "private")}.</p><div class="dialog-footer"><button class="button primary" type="submit">Send reply</button></div></form>`,
+  // Open immediately so dismissal also cancels the effect of a slow response.
+  // Each modal has a generation: a late request cannot reopen a dismissed post
+  // or replace a different post's conversation or reply draft.
+  const seq = modal(
+    "Reading view",
+    '<div class="reader-scroll"><p class="muted" role="status">Loading post…</p></div>',
+    true,
   );
+  let p;
+  try {
+    p = await api("/wordpress/post/" + encodeURIComponent(id));
+  } catch (e) {
+    if (seq === modalSeq && $("#modal").open) {
+      $(".reader-scroll").replaceChildren();
+      throw e;
+    }
+    return;
+  }
+  if (seq !== modalSeq || !$("#modal").open) return;
+  known.set(String(p.id), p);
+  fillModal(
+    `Post by ${p.account?.display_name || p.account?.acct || "this author"}`,
+    `<div class="reader-scroll" tabindex="-1">${author(p.account, p.created_at, p.url || p.uri)}${body(p, true)}${actions(p)}<div id="conversation"><p class="muted" role="status">Loading conversation…</p></div></div><form id="reply-form" data-id="${esc(p.id)}"><label class="sr-only" for="reply-text">Reply as ${esc(session.connection?.acct)}</label><textarea id="reply-text" data-id="${esc(p.id)}" required maxlength="5000" rows="2" placeholder="Add to the conversation…">${esc(drafts.get(String(p.id)) || "")}</textarea><div class="compose-footer"><p class="muted">As ${esc(session.connection?.acct)} · ${esc(p.visibility || "private")}</p><button class="button primary" type="submit" aria-label="Send reply">Send reply →</button></div></form>`,
+  );
+  $(".reader-scroll").focus({ preventScroll: true });
   try {
     const context = await api(
       "/wordpress/post/" + encodeURIComponent(id) + "/context",
     );
-    if ($("#reply-text")?.dataset.id !== String(id)) return;
+    if (seq !== modalSeq || $("#reply-text")?.dataset.id !== String(id)) return;
     const replies = [
       ...(context.ancestors || []),
       ...(context.descendants || []),
@@ -762,7 +861,7 @@ async function openPost(id) {
       : '<p class="muted spacer">No other replies returned by your site.</p>';
     observePreviews($("#conversation"));
   } catch {
-    if ($("#conversation"))
+    if (seq === modalSeq && $("#conversation"))
       $("#conversation").innerHTML =
         '<p class="muted">The conversation could not be loaded. The post is still available.</p>';
   }
@@ -822,6 +921,11 @@ async function search() {
 }
 async function click(b) {
   if (b.dataset.page) {
+    if (b.dataset.page === "feed" && view === "Saved") {
+      view = "All";
+      statuses = [];
+      cursor = null;
+    }
     await go(b.dataset.page);
     return;
   }
@@ -863,6 +967,24 @@ async function click(b) {
   }
   const a = b.dataset.do,
     id = b.dataset.id;
+  if (a === "close-reader") {
+    close();
+    return;
+  }
+  if (a === "reader-settings") {
+    const settings = $("#reader-settings");
+    settings.hidden = !settings.hidden;
+    b.setAttribute("aria-expanded", String(!settings.hidden));
+    if (!settings.hidden) $("#reader-font").focus({ preventScroll: true });
+    return;
+  }
+  if (a === "saved-feed") {
+    view = "Saved";
+    statuses = [];
+    cursor = null;
+    await go("feed");
+    return;
+  }
   if (a === "dismiss") $("#status-message").replaceChildren();
   if (a === "account") await go("account");
   if (a === "login") await authenticate();
@@ -1029,7 +1151,9 @@ document.addEventListener("click", async (e) => {
   )
     return;
   const disabled = b.disabled;
-  b.disabled = true;
+  // A read click opens a modal synchronously; its inert backdrop prevents
+  // duplicates while keeping the opener available for focus restoration.
+  if (b.dataset.do !== "read") b.disabled = true;
   try {
     await click(b);
   } catch (e) {
@@ -1051,27 +1175,33 @@ function showError(e) {
       el = document.createElement("p");
       el.className = "auth-error";
       el.setAttribute("role", "alert");
-      $(".dialog-body").append(el);
+      ($(".reader-scroll") || $(".dialog-body")).append(el);
     }
     el.textContent = message;
   } else error(message);
 }
 document.addEventListener("input", (e) => {
-  if (e.target.id === "text-size") {
+  if (["text-size", "reader-size"].includes(e.target.id)) {
     prefs.size = Number(e.target.value);
     theme();
-    $("#size-value").textContent = prefs.size + " px";
+    syncReadingControls();
   }
 });
 document.addEventListener("change", async (e) => {
   if (e.target.id === "codes-saved")
     $("[data-do=confirm-codes]").disabled = !e.target.checked;
-  if (e.target.id === "font-choice") {
+  if (["font-choice", "reader-font"].includes(e.target.id)) {
     prefs.font = e.target.value;
+    theme();
+    syncReadingControls();
+    await savePrefs();
+  }
+  if (e.target.id === "reader-theme") {
+    prefs.theme = e.target.value;
     theme();
     await savePrefs();
   }
-  if (e.target.id === "text-size") await savePrefs();
+  if (["text-size", "reader-size"].includes(e.target.id)) await savePrefs();
 });
 document.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -1087,6 +1217,12 @@ document.addEventListener("submit", async (e) => {
     }
     if (e.target.id === "search-form") {
       query = $("#search-input").value;
+      await search();
+    }
+    if (e.target.id === "quick-search-form") {
+      query = $("#quick-search").value;
+      searchType = "Posts";
+      await go("search");
       await search();
     }
     if (e.target.id === "follow-form") {
@@ -1107,11 +1243,18 @@ document.addEventListener("submit", async (e) => {
     }
     if (e.target.id === "reply-form") {
       const id = e.target.dataset.id,
-        value = $("#reply-text").value;
+        value = $("#reply-text").value,
+        seq = modalSeq;
       drafts.set(id, value);
       await api("/wordpress/reply", { id, text: value });
-      $("#reply-text").value = "";
-      drafts.delete(id);
+      // A completed send must not close another post opened while it was in
+      // flight. Keep any newer text typed after submitting this reply, too.
+      if (drafts.get(id) === value) drafts.delete(id);
+      if (seq !== modalSeq || !e.target.isConnected) {
+        notify("Reply sent through WordPress.");
+        return;
+      }
+      if ($("#reply-text").value === value) $("#reply-text").value = "";
       close();
       notify("Reply sent through WordPress.");
       await openPost(id);

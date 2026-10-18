@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"
+    />
     <meta name="color-scheme" content="light dark" />
     <meta name="referrer" content="no-referrer" />
     <title>Asterism Reader</title>
@@ -13,9 +16,28 @@
   <body>
     <header class="top">
       <div class="brand">
-        <span class="mark">⁂</span>Asterism <span>Reader</span>
+        <span class="mark">⁂</span
+        ><span class="brand-label"
+          >Asterism<small>Your personal reader</small></span
+        >
       </div>
       <nav aria-label="Main navigation"></nav>
+      <div class="sidebar-bottom" hidden></div>
+    </header>
+    <div class="app-toolbar" hidden>
+      <form id="quick-search-form" class="quick-search" role="search">
+        <label class="sr-only" for="quick-search"
+          >Search posts, people, or tags</label
+        >
+        <input
+          id="quick-search"
+          type="search"
+          placeholder="Search posts, people, #tags…"
+          maxlength="200"
+          required
+        />
+        <button type="submit" aria-label="Search feed">↗</button>
+      </form>
       <div class="top-tools" hidden>
         <button
           class="icon-button"
@@ -23,18 +45,63 @@
           aria-label="Preferences"
         >
           Aa</button
-        ><button class="icon-button" data-page="account" aria-label="Account">
+        ><button
+          id="account-shortcut"
+          class="icon-button"
+          data-page="account"
+          aria-label="Account"
+        >
           SR
         </button>
       </div>
-    </header>
+      <button
+        class="button primary toolbar-follow"
+        data-do="follow"
+        aria-label="Follow someone"
+      >
+        ＋ <span>Follow someone</span>
+      </button>
+    </div>
     <div id="status-message" role="status"></div>
     <main id="main" tabindex="-1"><p>Opening your reader…</p></main>
     <nav class="mobile-nav" aria-label="Mobile navigation" hidden></nav>
     <dialog id="modal" aria-labelledby="modal-title">
       <div class="dialog-top">
-        <h2 id="modal-title"></h2>
-        <button class="dialog-close" aria-label="Close dialog">×</button>
+        <button class="reader-back" data-do="close-reader" hidden>
+          ← Back to feed
+        </button>
+        <h2 id="modal-title" tabindex="-1"></h2>
+        <div class="dialog-tools">
+          <button
+            class="icon-button reader-preferences"
+            data-do="reader-settings"
+            aria-label="Reading preferences"
+            aria-expanded="false"
+            aria-controls="reader-settings"
+            hidden
+          >
+            Aa</button
+          ><button class="dialog-close" aria-label="Close dialog">×</button>
+        </div>
+      </div>
+      <div id="reader-settings" hidden>
+        <label
+          >Font<select id="reader-font">
+            <option value="sans">Sans serif</option>
+            <option value="serif">Serif</option>
+          </select></label
+        >
+        <label
+          >Text size <output id="reader-size-value">18 px</output
+          ><input id="reader-size" type="range" min="16" max="26" value="18"
+        /></label>
+        <label
+          >Theme<select id="reader-theme">
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+            <option value="system">System</option>
+          </select></label
+        >
       </div>
       <div class="dialog-body"></div>
     </dialog>
