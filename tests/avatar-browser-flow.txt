@@ -1,0 +1,67 @@
+async (page) => {
+  const image = 'https://images.example.com/avatar.png';
+  const broken = 'https://images.example.com/broken.png';
+  const accounts = [
+    { id: '20', display_name: 'Static Person', acct: 'static@example.social', avatar_static: image, avatar: image + '?animated' },
+    { id: '21', display_name: 'Original Person', acct: 'original@example.social', avatar: image },
+    { id: '22', display_name: 'Missing Person', acct: 'missing@example.social' },
+    { id: '23', display_name: 'Broken Person', acct: 'broken@example.social', avatar_static: broken, avatar: broken + '?original' },
+    { id: '24', display_name: 'Fallback Person', acct: 'fallback@example.social', avatar_static: broken, avatar: image },
+    { id: '25', display_name: 'Unsafe Person', acct: 'unsafe@example.social', avatar_static: 'javascript:alert(1)', avatar: 'https://127.0.0.1/avatar.png' },
+  ];
+  const posts = accounts.map((account, i) => ({ id: String(i + 1), account, created_at: '2026-10-18T06:00:00Z', content: '<p>A short post.</p>', url: 'https://example.social/posts/' + i, media_attachments: [], tags: [] }));
+  const requested = [];
+  await page.route('https://images.example.com/**', route => {
+    requested.push(route.request().url());
+    return route.request().url().includes('broken') ? route.abort() : route.fulfill({ contentType: 'image/png', body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64') });
+  });
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/session') return route.fulfill({ json: { csrf: 'fixture', phase: 'full', hasAccount: true, connection: { id: 'owner', acct: 'reader' }, preferences: { theme: 'dark', font: 'sans', size: 18 }, passkeys: [], sessions: [], backupRemaining: 8 } });
+    if (path === '/api/wordpress/feed') return route.fulfill({ json: { posts, next: null } });
+    if (path === '/api/wordpress/following') return route.fulfill({ json: { accounts, next: null } });
+    if (path === '/api/wordpress/author/20') return route.fulfill({ json: { account: accounts[0], posts: [posts[0]], next: null } });
+    if (path === '/api/wordpress/post/1') return route.fulfill({ json: posts[0] });
+    if (path === '/api/wordpress/post/1/context') return route.fulfill({ json: { ancestors: [], descendants: [posts[1]] } });
+    return route.fulfill({ status: 404, json: { error: 'Unknown fixture' } });
+  });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.goto('http://127.0.0.1:4322/');
+  await page.locator('.board > .post').last().waitFor();
+  for (const id of [1, 2, 4, 5]) await page.locator('.post[data-id="' + id + '"]').scrollIntoViewIfNeeded();
+  await page.waitForFunction(() => !document.querySelector('.post[data-id="4"] .avatar-image'));
+  await page.waitForFunction(() => { const img = document.querySelector('.post[data-id="5"] .avatar-image'); return img?.complete && img.naturalWidth > 0 && !img.dataset.fallbackSrc; });
+  for (const id of [1, 2, 5]) {
+    const state = await page.locator('.post[data-id="' + id + '"] .avatar').evaluate(el => {
+      const img = el.querySelector('img');
+      return { src: img?.src, width: img?.width, height: img?.height, referrer: img?.referrerPolicy, alt: img?.alt, initials: getComputedStyle(el.querySelector('.avatar-initials')).visibility, href: el.getAttribute('href'), fit: getComputedStyle(img).objectFit };
+    });
+    if (state.src !== image || state.width !== 40 || state.height !== 40 || state.referrer !== 'no-referrer' || state.alt !== '' || state.initials !== 'hidden' || state.fit !== 'cover' || !state.href.startsWith('#author=')) throw Error('Avatar rendering: ' + JSON.stringify(state));
+  }
+  if (requested.includes(image + '?animated')) throw Error('Static avatar was not preferred');
+  for (const id of [3, 4, 6]) {
+    const avatar = page.locator('.post[data-id="' + id + '"] .avatar');
+    if (await avatar.locator('img').count() || !await avatar.locator('.avatar-initials').isVisible()) throw Error('Initials fallback missing');
+  }
+  await page.locator('.post[data-id="1"] .read-button').click();
+  await page.locator('#conversation .avatar-image').waitFor();
+  if (await page.locator('.dialog-body > .author .avatar-image').getAttribute('src') !== image) throw Error('Conversation avatar missing');
+  await page.locator('.dialog-body > .author .avatar-image').click();
+  await page.getByRole('heading', { name: 'Posts by Static Person', exact: true }).waitFor();
+  if (await page.locator('#modal').evaluate(el => el.open)) throw Error('Avatar did not close conversation and open author');
+  if (await page.locator('#main > .author .avatar-image').getAttribute('src') !== image) throw Error('Author avatar missing');
+  await page.getByRole('button', { name: 'People', exact: true }).first().click();
+  await page.locator('.person-row .avatar-image').first().waitFor();
+  if (await page.locator('.person-row').count() !== accounts.length) throw Error('People not loaded');
+  await page.getByRole('button', { name: 'Feed', exact: true }).first().click();
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(theme => document.body.dataset.theme = theme, theme);
+    for (const width of [1440, 820, 390, 320]) {
+      await page.setViewportSize({ width, height: 1000 });
+      if (await page.evaluate(() => document.documentElement.scrollWidth > innerWidth)) throw Error('Overflow at ' + width);
+    }
+  }
+  await page.locator('.post[data-id="1"]').scrollIntoViewIfNeeded();
+  await page.screenshot({ path: 'output/playwright/avatar-mobile.png' });
+  return { staticAvatars: true, originalAvatars: true, staticFailureRetry: true, initialsFallback: true, unsafeURLsOmitted: true, authorLink: true, conversation: true, people: true, responsive: true };
+}

@@ -205,9 +205,15 @@ function author(a, date, source) {
   const name = a?.display_name || a?.username || "Unknown account",
     initials = name.slice(0, 2).toUpperCase();
   const href = a?.id ? "#author=" + encodeURIComponent(a.id) : "";
+  // Prefer the still image so animated profile pictures do not distract from
+  // reading. Keep initials underneath as the missing/broken image fallback.
+  const picture =
+      previewImageUrl(a?.avatar_static) || previewImageUrl(a?.avatar),
+    fallback = previewImageUrl(a?.avatar);
+  const portrait = `${picture ? `<img class="avatar-image" src="${esc(picture)}" ${fallback && fallback !== picture ? `data-fallback-src="${esc(fallback)}"` : ""} width="40" height="40" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ""}<span class="avatar-initials" aria-hidden="true">${esc(initials)}</span>`;
   const avatar = href
-    ? `<a class="avatar author-link" href="${esc(href)}" aria-label="Posts by ${esc(name)}">${esc(initials)}</a>`
-    : `<span class="avatar">${esc(initials)}</span>`;
+    ? `<a class="avatar author-link" href="${esc(href)}" aria-label="Posts by ${esc(name)}">${portrait}</a>`
+    : `<span class="avatar" role="img" aria-label="${esc(name)}">${portrait}</span>`;
   const identity = `<strong>${esc(name)}</strong><span class="handle">${esc(a?.acct)}</span>`;
   const profile = href
     ? `<a class="author-info author-link" href="${esc(href)}" aria-label="Posts by ${esc(name)} (${esc(a?.acct)})">${identity}</a>`
@@ -226,16 +232,20 @@ function previewText(link, metadata) {
   const image = previewImageUrl(metadata?.image);
   return `${image ? `<img class="link-preview-thumbnail" src="${esc(image)}" width="64" height="64" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ""}<span class="link-preview-text"><span class="link-preview-domain">${esc(domain)}</span><strong>${esc(String(metadata?.title || "Open link").slice(0, 200))}</strong>${metadata?.description ? `<span class="link-preview-description">${esc(String(metadata.description).slice(0, 320))}</span>` : ""}</span><span class="link-preview-arrow" aria-hidden="true">↗</span>`;
 }
-// Image errors do not bubble. Capture failures for dynamically inserted cards
-// and release the thumbnail's space while keeping the whole text link usable.
+// Image errors do not bubble. Capture failures for dynamically inserted images.
+// Avatars try the original when a separate static URL fails, then show initials;
+// link previews release the thumbnail space and keep their text link usable.
 document.addEventListener(
   "error",
   (event) => {
-    if (
-      event.target instanceof HTMLImageElement &&
-      event.target.classList.contains("link-preview-thumbnail")
-    )
-      event.target.remove();
+    const image = event.target;
+    if (!(image instanceof HTMLImageElement)) return;
+    if (image.classList.contains("avatar-image") && image.dataset.fallbackSrc) {
+      const fallback = image.dataset.fallbackSrc;
+      delete image.dataset.fallbackSrc;
+      image.src = fallback;
+    } else if (image.matches(".link-preview-thumbnail, .avatar-image"))
+      image.remove();
   },
   true,
 );

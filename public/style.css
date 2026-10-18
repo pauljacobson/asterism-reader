@@ -290,6 +290,7 @@ main {
   margin-bottom: 21px;
 }
 .avatar {
+  position: relative;
   display: grid;
   place-items: center;
   width: 40px;
@@ -299,6 +300,17 @@ main {
   color: var(--accent);
   font-size: 12px;
   flex-shrink: 0;
+}
+.avatar-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+}
+.avatar-image + .avatar-initials {
+  visibility: hidden;
 }
 .author-info {
   min-width: 0;
