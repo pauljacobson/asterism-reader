@@ -3,6 +3,8 @@ import {
   startAuthentication,
 } from "@simplewebauthn/browser";
 import DOMPurify from "dompurify";
+import { canBoost } from "../shared/boost.js";
+import { installCard, startPwa, installApp, updateApp } from "./pwa.js";
 import { previewImageUrl } from "../shared/preview-image.js";
 const $ = (s) => document.querySelector(s),
   $$ = (s) => [...document.querySelectorAll(s)];
@@ -69,6 +71,7 @@ const shapes = {
   search: '<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>',
   people:
     '<circle cx="9" cy="8" r="4"/><path d="M1 21v-2a8 8 0 0 1 16 0v2M17 5a4 4 0 0 1 0 8"/>',
+  boost: '<path d="m5 7 3-3 3 3M8 4v12H3m16 1-3 3-3-3m3 3V8h5"/>',
   heart: '<path d="M12 21 3 12C-3 4 7 0 12 7c5-7 15-3 9 5z"/>',
   save: '<path d="M6 3h12v18l-6-4-6 4z"/>',
   reply: '<path d="M21 11a8 8 0 0 1-8 8H7l-5 3 2-6a8 8 0 1 1 17-5z"/>',
@@ -142,6 +145,8 @@ function error(message) {
     `<div class="error-banner"><button data-do="dismiss" aria-label="Dismiss message">×</button>${esc(message)}</div>`;
 }
 async function api(path, body, method) {
+  if (!navigator.onLine)
+    throw new Error("You are offline. Reconnect and try again.");
   const response = await fetch("/api" + path, {
     method: method || (body ? "POST" : "GET"),
     headers: body
@@ -261,7 +266,7 @@ function author(a, date, source) {
   return `<div class="author">${avatar}${profile}${timestamp ? (permalink ? `<a class="post-date" href="${esc(permalink)}" target="_blank" rel="noopener noreferrer" aria-label="Open original post">${timestamp}</a>` : `<span class="post-date">${timestamp}</span>`) : ""}</div>`;
 }
 function actions(p) {
-  return `<div class="actions"><button data-do="like" data-id="${esc(p.id)}" aria-label="${p.favourited ? "Unlike" : "Like"} post" aria-pressed="${!!p.favourited}">${ico("heart")} ${Number(p.favourites_count) || 0}</button><button data-do="read" data-id="${esc(p.id)}" aria-label="Read conversation and reply">${ico("reply")} ${Number(p.replies_count) || 0}</button><button data-do="save" data-id="${esc(p.id)}" aria-label="${p.bookmarked ? "Unsave" : "Save"} post" aria-pressed="${!!p.bookmarked}">${ico("save")}</button></div>`;
+  return `<div class="actions"><button data-do="like" data-id="${esc(p.id)}" aria-label="${p.favourited ? "Unlike" : "Like"} post" aria-pressed="${!!p.favourited}">${ico("heart")} ${Number(p.favourites_count) || 0}</button><button data-do="read" data-id="${esc(p.id)}" aria-label="Read conversation and reply">${ico("reply")} ${Number(p.replies_count) || 0}</button><button data-do="boost" data-id="${esc(p.id)}" aria-label="${p.reblogged ? "Undo boost" : "Boost"} post" aria-pressed="${!!p.reblogged}" ${!p.reblogged && !canBoost(p, session.connection?.id) ? 'disabled title="Only public Fediverse posts can be boosted"' : 'title="Share with your Fediverse followers"'}>${ico("boost")} ${Number(p.reblogs_count) || 0}</button><button data-do="save" data-id="${esc(p.id)}" aria-label="${p.bookmarked ? "Unsave" : "Save"} post" aria-pressed="${!!p.bookmarked}">${ico("save")}</button></div>`;
 }
 function previewText(link, metadata) {
   const domain = new URL(link).hostname.replace(/^www\./, "");
@@ -571,7 +576,7 @@ function account() {
       "Account.",
       "Manage how you sign in and connect to your site.",
     ) +
-    `<div class="settings-layout"><div><section class="panel"><h2>Passkeys</h2>${session.passkeys.map((p) => `<div class="setting-row"><div><h3>${esc(p.name)}</h3><p>Added ${esc(new Date(p.created).toLocaleDateString())}</p></div>${button("Remove", "remove-key", `data-id="${esc(p.id)}" ${session.passkeys.length < 2 ? "disabled" : ""}`)}</div>`).join("")}${button("Add a passkey", "add-key")}</section><section class="panel"><h2>Backup codes</h2><p>${session.backupRemaining} unused codes. Save them separately from this app.</p>${button("Replace backup codes", "replace-codes")}</section><section class="panel"><h2>Sessions</h2>${session.sessions.map((s) => `<div class="setting-row"><div><h3>${s.current ? "This browser" : "Another session"}</h3><p>Last active ${esc(new Date(s.touched).toLocaleString())}</p></div>${s.current ? '<span class="badge">Current</span>' : button("Sign out", "revoke-session", `data-id="${esc(s.id)}"`)}</div>`).join("")}${button("Sign out of this browser", "logout")}</section></div><div><section class="panel"><h2>WordPress connection</h2><p>wordpress.example.com</p><p class="account-name">${session.connection ? `Connected as ${esc(session.connection.display_name || session.connection.acct)}` : "Not connected"}</p><p>Authorize Asterism to read your feeds, follow people, reply, and react as your site account.</p>${button(session.connection ? "Disconnect WordPress" : "Connect WordPress", session.connection ? "disconnect" : "connect", "", "primary")}<p>Your WordPress access token is encrypted and kept on the Asterism server.</p></section><section class="panel"><h2>Lists</h2><p>List management and Mastodon list import are planned for a later release.</p></section></div></div>`
+    `<div class="settings-layout"><div><section class="panel"><h2>Passkeys</h2>${session.passkeys.map((p) => `<div class="setting-row"><div><h3>${esc(p.name)}</h3><p>Added ${esc(new Date(p.created).toLocaleDateString())}</p></div>${button("Remove", "remove-key", `data-id="${esc(p.id)}" ${session.passkeys.length < 2 ? "disabled" : ""}`)}</div>`).join("")}${button("Add a passkey", "add-key")}</section><section class="panel"><h2>Backup codes</h2><p>${session.backupRemaining} unused codes. Save them separately from this app.</p>${button("Replace backup codes", "replace-codes")}</section><section class="panel"><h2>Sessions</h2>${session.sessions.map((s) => `<div class="setting-row"><div><h3>${s.current ? "This browser" : "Another session"}</h3><p>Last active ${esc(new Date(s.touched).toLocaleString())}</p></div>${s.current ? '<span class="badge">Current</span>' : button("Sign out", "revoke-session", `data-id="${esc(s.id)}"`)}</div>`).join("")}${button("Sign out of this browser", "logout")}</section></div><div>${installCard()}<section class="panel"><h2>WordPress connection</h2><p>wordpress.example.com</p><p class="account-name">${session.connection ? `Connected as ${esc(session.connection.display_name || session.connection.acct)}` : "Not connected"}</p><p>Authorize Asterism to read your feeds, follow people, reply, and react as your site account.</p>${button(session.connection ? "Disconnect WordPress" : "Connect WordPress", session.connection ? "disconnect" : "connect", "", "primary")}<p>Your WordPress access token is encrypted and kept on the Asterism server.</p></section><section class="panel"><h2>Lists</h2><p>List management and Mastodon list import are planned for a later release.</p></section></div></div>`
   );
 }
 // Keep the controls stable during refreshes so searching and reading details
@@ -1067,6 +1072,7 @@ async function search() {
       '<div class="empty">No matches returned. Your site may not have indexed this content.</div>';
   if (page === "search") render();
 }
+const pendingReactions = new Set();
 async function click(b) {
   if (b.dataset.page) {
     if (b.dataset.page === "feed" && view === "Saved") {
@@ -1133,6 +1139,8 @@ async function click(b) {
     await go("feed");
     return;
   }
+  if (a === "install-app") await installApp();
+  if (a === "update-app") await updateApp();
   if (a === "view-logs") await go("logs");
   if (a === "back-admin") await go("admin");
   if (a === "refresh-logs") await loadLogs();
@@ -1248,35 +1256,82 @@ async function click(b) {
   if (a === "more-feed") await loadFeed(true);
   if (a === "more-people") await loadPeople(true);
   if (a === "read") await openPost(id);
-  if (a === "like" || a === "save") {
+  if (a === "like" || a === "save" || a === "boost") {
     const p = known.get(id);
     if (!p) return;
-    const operation =
-      a === "like"
-        ? p.favourited
-          ? "unfavourite"
-          : "favourite"
-        : p.bookmarked
-          ? "unbookmark"
-          : "bookmark";
-    const updated = await api(
-      "/wordpress/post/" + encodeURIComponent(id) + "/" + operation,
-      {},
-    );
-    Object.assign(p, updated);
-    $$(`.actions button`)
+    const lock = `${id}:${a}`;
+    if (pendingReactions.has(lock)) return;
+    pendingReactions.add(lock);
+    const controls = $$(".actions button")
       .filter((x) => x.dataset.id === id && x.dataset.do === a)
-      .forEach((x) => {
-        x.setAttribute(
-          "aria-pressed",
-          String(a === "like" ? !!p.favourited : !!p.bookmarked),
-        );
-        x.innerHTML =
-          a === "like"
-            ? ico("heart") + " " + (Number(p.favourites_count) || 0)
-            : ico("save");
-      });
-    notify("Confirmed by WordPress.");
+      .map((control) => [control, control.disabled]);
+    controls.forEach(([control]) => {
+      control.disabled = true;
+    });
+    try {
+      const operation =
+        a === "boost"
+          ? p.reblogged
+            ? "unreblog"
+            : "reblog"
+          : a === "like"
+            ? p.favourited
+              ? "unfavourite"
+              : "favourite"
+            : p.bookmarked
+              ? "unbookmark"
+              : "bookmark";
+      const updated = await api(
+        "/wordpress/post/" + encodeURIComponent(id) + "/" + operation,
+        {},
+      );
+      // Patch every copy of the original, including boosts and open conversations,
+      // so moving between views cannot restore stale reaction state.
+      const patch = (item) => {
+        if (String(item.id) === id) Object.assign(item, updated);
+        if (item.reblog && String(item.reblog.id) === id)
+          Object.assign(item.reblog, updated);
+      };
+      for (const item of [...known.values(), ...statuses, ...authorPosts])
+        patch(item);
+      Object.assign(p, updated);
+      $$(`.actions button`)
+        .filter((x) => x.dataset.id === id && x.dataset.do === a)
+        .forEach((x) => {
+          x.setAttribute(
+            "aria-pressed",
+            String(
+              a === "boost"
+                ? !!p.reblogged
+                : a === "like"
+                  ? !!p.favourited
+                  : !!p.bookmarked,
+            ),
+          );
+          if (a === "boost")
+            x.setAttribute(
+              "aria-label",
+              p.reblogged ? "Undo boost post" : "Boost post",
+            );
+          x.innerHTML =
+            a === "boost"
+              ? ico("boost") + " " + (Number(p.reblogs_count) || 0)
+              : a === "like"
+                ? ico("heart") + " " + (Number(p.favourites_count) || 0)
+                : ico("save");
+        });
+      notify(
+        a === "boost"
+          ? p.reblogged
+            ? "Boost queued by WordPress for your followers."
+            : "Boost removed by WordPress."
+          : "Confirmed by WordPress.",
+      );
+    } finally {
+      pendingReactions.delete(lock);
+      for (const [control, wasDisabled] of controls)
+        if (control.isConnected) control.disabled = wasDisabled;
+    }
   }
   if (a === "follow") {
     if (!session.connection)
@@ -1437,6 +1492,14 @@ document.addEventListener("submit", async (e) => {
   } finally {
     if (submit.isConnected) submit.disabled = false;
   }
+});
+startPwa({
+  notify,
+  hasDraft: () =>
+    [...drafts.values()].some((value) => value.trim()) ||
+    !!$("#reply-text")?.value.trim() ||
+    ($("#modal").open && !$("#modal").classList.contains("reader")) ||
+    ["setup", "recovery"].includes(session?.phase),
 });
 try {
   await refreshSession();

@@ -765,3 +765,169 @@ test("sparse author history returns a continuation after three pages instead of 
     await h.finish();
   }
 });
+
+test("boosts require owner authentication and CSRF, reject non-public posts and RSS identities before any write", async () => {
+  let visibility: string | undefined = "public",
+    acct = "person@example.social";
+  const writes: string[] = [];
+  const h = await harness(async (input, init) => {
+    if (init?.method === "POST") writes.push(String(input));
+    return Response.json({
+      id: "42",
+      visibility,
+      account: { id: "20", acct },
+      uri: "https://example.social/posts/42",
+      reblogged: false,
+    });
+  });
+  try {
+    assert.equal(
+      (await h.request("/wordpress/post/42/reblog", {})).response.status,
+      401,
+    );
+    h.seed();
+    h.db.run(
+      "INSERT INTO secrets VALUES('connection',?)",
+      seal({ access_token: "private", account: { id: "10" } }, h.c.key),
+    );
+    assert.equal(
+      (
+        await h.request(
+          "/wordpress/post/42/reblog",
+          {},
+          { headers: { "x-csrf-token": "wrong" } },
+        )
+      ).response.status,
+      403,
+    );
+    for (visibility of ["private", "direct", "unlisted", undefined])
+      assert.equal(
+        (await h.request("/wordpress/post/42/reblog", {})).response.status,
+        422,
+      );
+    visibility = "public";
+    acct = "https://rss.example.com/feed";
+    assert.equal(
+      (await h.request("/wordpress/post/42/reblog", {})).response.status,
+      422,
+    );
+    assert.equal(writes.length, 0);
+  } finally {
+    await h.finish();
+  }
+});
+
+test("boost and undo normalize wrapped responses, keep the requested ID, and send only public boosts", async () => {
+  const writes: { path: string; body: unknown }[] = [];
+  const original = {
+    id: "42",
+    visibility: "public",
+    account: { id: "20", acct: "person@example.social" },
+    uri: "https://example.social/posts/42",
+    reblogged: false,
+    reblogs_count: 2,
+  };
+  const h = await harness(async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    if (init?.method !== "POST") return Response.json(original);
+    writes.push({ path, body: JSON.parse(String(init.body)) });
+    if (path.endsWith("/unreblog"))
+      return Response.json({ ...original, reblogged: false });
+    return Response.json({
+      id: "wrapper-id",
+      reblogged: true,
+      reblog: { ...original, reblogged: true, reblogs_count: 3 },
+    });
+  });
+  try {
+    h.seed();
+    h.db.run(
+      "INSERT INTO secrets VALUES('connection',?)",
+      seal({ access_token: "private", account: { id: "10" } }, h.c.key),
+    );
+    const boosted = await h.request("/wordpress/post/42/reblog", {
+      visibility: "private",
+      text: "must not become a quote",
+    });
+    assert.equal(boosted.response.status, 200);
+    assert.equal(boosted.data.id, "42");
+    assert.equal(boosted.data.reblogged, true);
+    assert.equal(boosted.data.reblogs_count, 3);
+    assert.equal(boosted.data.reblog, undefined);
+    const undone = await h.request("/wordpress/post/42/unreblog", {});
+    assert.equal(undone.response.status, 200);
+    assert.equal(undone.data.reblogged, false);
+    assert.deepEqual(writes, [
+      { path: "/api/v1/statuses/42/reblog", body: { visibility: "public" } },
+      { path: "/api/v1/statuses/42/unreblog", body: {} },
+    ]);
+  } finally {
+    await h.finish();
+  }
+});
+
+test("failed or ambiguous boost responses are never presented as confirmed", async () => {
+  let failure = true;
+  const h = await harness(async (_input, init) => {
+    if (init?.method === "POST")
+      return Response.json({}, { status: failure ? 503 : 200 });
+    return Response.json({
+      id: "42",
+      visibility: "public",
+      account: { id: "20", acct: "person@example.social" },
+      url: "https://example.social/posts/42",
+    });
+  });
+  try {
+    h.seed();
+    h.db.run(
+      "INSERT INTO secrets VALUES('connection',?)",
+      seal({ access_token: "private", account: { id: "10" } }, h.c.key),
+    );
+    assert.equal(
+      (await h.request("/wordpress/post/42/reblog", {})).response.status,
+      502,
+    );
+    failure = false;
+    assert.equal(
+      (await h.request("/wordpress/post/42/reblog", {})).response.status,
+      502,
+    );
+    assert.equal(
+      (await h.request("/wordpress/post/42/unreblog", {})).response.status,
+      502,
+    );
+  } finally {
+    await h.finish();
+  }
+});
+
+test("PWA entry points revalidate and APIs remain private while fingerprinted assets are immutable", async () => {
+  const h = await harness();
+  try {
+    for (const path of ["sw.js", "manifest.webmanifest", "index.html"]) {
+      const { response } = await h.request("/../" + path);
+      assert.equal(response.status, 200);
+      assert.match(response.headers.get("cache-control")!, /must-revalidate/);
+      assert.equal(
+        response.headers.get("cloudflare-cdn-cache-control"),
+        "no-store",
+      );
+      if (path === "sw.js")
+        assert.equal(response.headers.get("service-worker-allowed"), "/");
+    }
+    const { response } = await h.request("/../index.html");
+    const html = await response.text();
+    const asset = html.match(/\/assets\/app-[a-f0-9]{16}\.js/)![0];
+    assert.match(
+      (await h.request("/.." + asset)).response.headers.get("cache-control")!,
+      /immutable/,
+    );
+    assert.equal(
+      (await h.request("/session")).response.headers.get("cache-control"),
+      "no-store",
+    );
+  } finally {
+    await h.finish();
+  }
+});

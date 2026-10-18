@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { canBoost } from "../shared/boost.js";
 import { AppLogger, wordpressOperation, failureReason } from "./logging.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
@@ -405,20 +406,44 @@ export function wordpressRouter(
   r.post("/post/:id/:action", async (req, res) => {
     sec.limit("write:" + req.session.uid, 60, 60_000);
     const action = z
-      .enum(["favourite", "unfavourite", "bookmark", "unbookmark"])
+      .enum([
+        "favourite",
+        "unfavourite",
+        "bookmark",
+        "unbookmark",
+        "reblog",
+        "unreblog",
+      ])
       .parse(req.params.action);
-    res.json(
-      (
-        await api(
-          "/api/v1/statuses/" +
-            encodeURIComponent(id(req.params.id)) +
-            "/" +
-            action,
-          "POST",
-          {},
-        )
-      ).data,
-    );
+    const selected = id(req.params.id);
+    const path = "/api/v1/statuses/" + encodeURIComponent(selected);
+    if (action === "reblog") {
+      const original = (await api(path)).data;
+      const post = original.reblog || original;
+      const owner = getSecret<Connection>("connection")?.account.id;
+      if (!canBoost(post, owner))
+        throw new HttpError(422, "Only public Fediverse posts can be boosted.");
+    }
+    const updated = (
+      await api(
+        path + "/" + action,
+        "POST",
+        action === "reblog" ? { visibility: "public" } : {},
+      )
+    ).data;
+    if (action === "reblog" || action === "unreblog") {
+      const original = updated?.reblog || updated;
+      const state =
+        typeof updated?.reblogged === "boolean"
+          ? updated.reblogged
+          : original?.reblogged;
+      if (state !== (action === "reblog"))
+        throw new HttpError(
+          502,
+          "WordPress could not confirm the boost state. Refresh the post before retrying.",
+        );
+      res.json({ ...original, id: selected, reblogged: state });
+    } else res.json(updated);
   });
   r.post("/follow", async (req, res) => {
     sec.limit("follow:" + req.session.uid, 20, 60_000);

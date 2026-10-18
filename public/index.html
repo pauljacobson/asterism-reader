@@ -9,7 +9,11 @@
     <meta name="color-scheme" content="light dark" />
     <meta name="referrer" content="no-referrer" />
     <title>Asterism Reader</title>
-    <link rel="icon" href="data:," />
+    <meta name="theme-color" content="#14192b" />
+    <meta name="apple-mobile-web-app-title" content="Asterism" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icons/asterism.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <link rel="stylesheet" href="/style.css" />
     <script type="module" src="/app.js"></script>
   </head>
@@ -61,6 +65,15 @@
       >
         ＋ <span>Follow someone</span>
       </button>
+    </div>
+    <div class="app-notices">
+      <p id="offline-notice" class="notice" role="status" hidden>
+        You’re offline. Reconnect to load posts and send actions.
+      </p>
+      <div id="update-notice" class="notice update-notice" role="status" hidden>
+        <span>A new version of Asterism is ready.</span
+        ><button class="button" data-do="update-app">Update app</button>
+      </div>
     </div>
     <div id="status-message" role="status"></div>
     <main id="main" tabindex="-1"><p>Opening your reader…</p></main>

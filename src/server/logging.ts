@@ -109,6 +109,8 @@ const operations = new Set([
   "hashtag",
   "post",
   "conversation",
+  "reblog",
+  "unreblog",
   "favourite",
   "unfavourite",
   "bookmark",
@@ -131,6 +133,8 @@ export function wordpressOperation(path: string) {
   const tail = p.split("/").at(-1)!;
   if (
     [
+      "reblog",
+      "unreblog",
       "following",
       "favourite",
       "unfavourite",

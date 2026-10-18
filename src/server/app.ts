@@ -192,10 +192,35 @@ export function createApp(
     res.json({ preview: await previews.get(input.url) });
   });
   app.use("/api", (_req, res) => res.status(404).json({ error: "Not found." }));
+  // Mutable entry points must revalidate at the browser and CDN. Fingerprinted
+  // assets can be cached indefinitely because a deployment changes their URL.
+  app.use((req, res, next) => {
+    if (
+      [
+        "/",
+        "/index.html",
+        "/sw.js",
+        "/manifest.webmanifest",
+        "/offline.html",
+        "/offline.css",
+        "/app.js",
+        "/style.css",
+      ].includes(req.path) ||
+      req.path.startsWith("/icons/")
+    ) {
+      res.set("Cache-Control", "no-cache, max-age=0, must-revalidate");
+      res.set("CDN-Cache-Control", "no-store");
+      res.set("Cloudflare-CDN-Cache-Control", "no-store");
+    }
+    if (req.path === "/sw.js") res.set("Service-Worker-Allowed", "/");
+    if (/^\/assets\/(app|style)-[a-f0-9]{16}\.(js|css)$/.test(req.path))
+      res.set("Cache-Control", "public, max-age=31536000, immutable");
+    next();
+  });
   app.use(
     express.static(resolve("dist/public"), {
       index: "index.html",
-      maxAge: 0,
+      cacheControl: false,
       dotfiles: "deny",
     }),
   );
