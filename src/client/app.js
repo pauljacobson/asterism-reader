@@ -3,6 +3,7 @@ import {
   startAuthentication,
 } from "@simplewebauthn/browser";
 import DOMPurify from "dompurify";
+import { previewImageUrl } from "../shared/preview-image.js";
 const $ = (s) => document.querySelector(s),
   $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (v) =>
@@ -222,8 +223,22 @@ function actions(p) {
 }
 function previewText(link, metadata) {
   const domain = new URL(link).hostname.replace(/^www\./, "");
-  return `<span class="link-preview-text"><span class="link-preview-domain">${esc(domain)}</span><strong>${esc(String(metadata?.title || "Open link").slice(0, 200))}</strong>${metadata?.description ? `<span class="link-preview-description">${esc(String(metadata.description).slice(0, 320))}</span>` : ""}</span><span class="link-preview-arrow" aria-hidden="true">↗</span>`;
+  const image = previewImageUrl(metadata?.image);
+  return `${image ? `<img class="link-preview-thumbnail" src="${esc(image)}" width="64" height="64" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer">` : ""}<span class="link-preview-text"><span class="link-preview-domain">${esc(domain)}</span><strong>${esc(String(metadata?.title || "Open link").slice(0, 200))}</strong>${metadata?.description ? `<span class="link-preview-description">${esc(String(metadata.description).slice(0, 320))}</span>` : ""}</span><span class="link-preview-arrow" aria-hidden="true">↗</span>`;
 }
+// Image errors do not bubble. Capture failures for dynamically inserted cards
+// and release the thumbnail's space while keeping the whole text link usable.
+document.addEventListener(
+  "error",
+  (event) => {
+    if (
+      event.target instanceof HTMLImageElement &&
+      event.target.classList.contains("link-preview-thumbnail")
+    )
+      event.target.remove();
+  },
+  true,
+);
 function linkPreview(html, metadata) {
   const root = document.createElement("div");
   root.innerHTML = html;

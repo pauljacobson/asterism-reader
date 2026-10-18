@@ -4,6 +4,7 @@ import {
   createPreviewService,
   parsePreviewMetadata,
 } from "../src/server/link-previews.js";
+import { previewImageUrl } from "../src/shared/preview-image.js";
 
 const publicLookup = async () => [{ address: "93.184.216.34", family: 4 }];
 const html = (body = "<title>Article title</title>") => ({
@@ -58,6 +59,60 @@ test("preview fetching rejects private, local, unusual-port and non-web destinat
   ])
     assert.equal(await service.get(url), null, url);
   assert.equal(requests, 0);
+});
+
+test("thumbnail metadata prefers secure Open Graph images and supports Twitter fallback", () => {
+  const destination = "https://example.com/articles/story";
+  assert.equal(
+    parsePreviewMetadata(
+      '<meta property="og:image" content="/ordinary.jpg"><meta property="og:image:secure_url" content="//cdn.example.com/small.jpg?a=1&amp;b=2"><meta name="twitter:image" content="/twitter.jpg">',
+      destination,
+    ).image,
+    "https://cdn.example.com/small.jpg?a=1&b=2",
+  );
+  assert.equal(
+    parsePreviewMetadata(
+      '<meta property="og:image" content="http://example.com/insecure.jpg"><meta name="twitter:image" content="../twitter.jpg">',
+      destination,
+    ).image,
+    "https://example.com/twitter.jpg",
+  );
+  assert.equal(
+    parsePreviewMetadata("<title>No image</title>", destination).image,
+    "",
+  );
+  for (const unsafe of [
+    "javascript:alert(1)",
+    "data:image/svg+xml,test",
+    "http://example.com/image.jpg",
+    "https://127.0.0.1/x",
+    "https://2130706433/x",
+    "https://[::1]/x",
+    "https://localhost/x",
+    "https://foo.local/x",
+    "https://example.com:4320/x",
+    "https://user:pass@example.com/x",
+  ])
+    assert.equal(previewImageUrl(unsafe), "", unsafe);
+});
+
+test("relative thumbnails resolve against the final page while the post link stays original", async () => {
+  const service = createPreviewService({
+    lookup: publicLookup,
+    request: async (u) =>
+      u.hostname === "example.com"
+        ? {
+            status: 302,
+            headers: { location: "https://news.example.com/articles/story" },
+            body: "",
+          }
+        : html(
+            '<title>Redirected article</title><meta property="og:image" content="../images/photo.jpg">',
+          ),
+  });
+  const preview = await service.get("https://example.com/gift?token=keep");
+  assert.equal(preview?.url, "https://example.com/gift?token=keep");
+  assert.equal(preview?.image, "https://news.example.com/images/photo.jpg");
 });
 
 test("preview connections pin a verified public DNS answer and reject mixed private answers", async () => {

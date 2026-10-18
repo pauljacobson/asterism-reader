@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import ipaddr from "ipaddr.js";
 import { Parser } from "htmlparser2";
+import { previewImageUrl } from "../shared/preview-image.js";
 
 const MAX_BYTES = 256_000;
 type Address = { address: string; family: number };
@@ -17,6 +18,7 @@ export type LinkPreview = {
   domain: string;
   title: string;
   description: string;
+  image: string;
 };
 type Dependencies = {
   lookup?: (host: string) => Promise<Address[]>;
@@ -135,6 +137,7 @@ const clean = (value: string, limit: number) =>
 export function parsePreviewMetadata(
   html: string,
   destination: string,
+  baseUrl = destination,
 ): LinkPreview {
   const meta = new Map<string, string>();
   let title = "",
@@ -173,6 +176,10 @@ export function parsePreviewMetadata(
         "",
       320,
     ),
+    image:
+      ["og:image:secure_url", "og:image", "twitter:image", "twitter:image:src"]
+        .map((key) => previewImageUrl(meta.get(key), baseUrl))
+        .find(Boolean) || "",
   };
 }
 
@@ -231,7 +238,8 @@ export function createPreviewService(deps: Dependencies = {}) {
         Buffer.byteLength(page.body) > MAX_BYTES
       )
         return null;
-      const preview = parsePreviewMetadata(page.body, destination);
+      // Relative image URLs belong to the final page, even after a redirect.
+      const preview = parsePreviewMetadata(page.body, destination, u.href);
       return preview.title ? preview : null;
     }
     return null;

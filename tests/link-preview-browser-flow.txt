@@ -1,5 +1,7 @@
 async(page)=>{
 const first='https://news.example.com/first?gift=keep-me', second='http://other.example.com/second', hidden='https://news.example.com/sensitive', supplied='https://news.example.com/supplied', blocked='https://news.example.com/blocked';
+const thumbnail='https://images.example.com/thumb.png', broken='https://images.example.com/broken.png';
+await page.route('https://images.example.com/**',route=>route.request().url()===broken?route.abort():route.fulfill({contentType:'image/png',body:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64')}));
 const account={id:'20',display_name:'Sample author',acct:'author@example.social'};
 const make=(id,content,extra={})=>({id:String(id),account,created_at:'2026-10-18T06:00:00Z',url:'https://example.social/posts/'+id,content,media_attachments:[],tags:[],...extra});
 const posts=[
@@ -10,7 +12,7 @@ make(4,'<p><a href="https://example.social/@author">@author</a> <a href="https:/
 make(5,'<p><a href="javascript:alert(1)">https://bad.example.com/</a></p>'),
 make(6,'<p><a href="'+first+'">'+first+'</a></p>'),
 make(7,'<p><a href="'+hidden+'">'+hidden+'</a></p>',{sensitive:true,spoiler_text:'Reveal this preview'}),
-make(8,'<p><a href="'+supplied+'">'+supplied+'</a></p>',{card:{url:supplied,title:'Supplied by WordPress',description:'Already available'}}),
+make(8,'<p><a href="'+supplied+'">'+supplied+'</a></p>',{card:{url:supplied,title:'Supplied by WordPress',description:'Already available',image:thumbnail}}),
 make(9,'<p><a href="'+blocked+'">'+blocked+'</a></p>'),
 make(10,'<p>Inline link '+second+' remains part of the sentence.</p>'),
 make(11,'<p>Line introduction<br><a href="'+first+'">'+first+'</a><br><a href="'+second+'">'+second+'</a></p>')
@@ -23,7 +25,7 @@ if(u.pathname==='/api/wordpress/feed')return route.fulfill({json:{posts,next:nul
 if(u.pathname==='/api/link-preview'){
 const {url}=route.request().postDataJSON(); requested.push(url);counts.set(url,(counts.get(url)||0)+1);active++;maximum=Math.max(maximum,active);
 await new Promise(r=>setTimeout(r,40));active--;
-return route.fulfill({json:{preview:url===blocked?null:{url,title:'A useful title & <script>window.injected=true</script>',description:'An article summary <img src=x onerror="window.injected=true">.'}}});
+return route.fulfill({json:{preview:url===blocked?null:{url,title:'A useful title & <script>window.injected=true</script>',description:'An article summary <img src=x onerror="window.injected=true">.',image:url===first?thumbnail:url.includes('plain.example.com')?broken:''}}});
 }
 return route.fulfill({status:404,json:{error:'Unknown fixture route'}});
 });
@@ -43,7 +45,16 @@ if(requested.includes(hidden))throw Error('Sensitive preview fetched before reve
 if(requested.includes(supplied))throw Error('Supplied metadata was fetched again');
 if(counts.get(first)!==1)throw Error('Duplicate URL was not coalesced');
 if(maximum>2)throw Error('Too many concurrent preview requests');
-if(await page.evaluate(()=>!!window.injected)||await page.locator('.link-preview script,.link-preview img,.link-preview iframe').count())throw Error('Metadata HTML executed or embedded');
+if(await page.evaluate(()=>!!window.injected)||await page.locator('.link-preview script,.link-preview iframe,.link-preview [onerror]').count())throw Error('Metadata HTML executed or embedded');
+await page.locator('.post[data-id="1"]').scrollIntoViewIfNeeded();
+await page.waitForFunction(()=>{const img=document.querySelector('.post[data-id="1"] .link-preview-thumbnail');return img?.complete&&img.naturalWidth>0;});
+const thumb=await page.locator('.post[data-id="1"] .link-preview-thumbnail').evaluate(img=>({src:img.src,width:img.width,height:img.height,loading:img.loading,referrer:img.referrerPolicy,alt:img.alt}));
+if(thumb.src!==thumbnail||thumb.width!==64||thumb.height!==64||thumb.loading!=='lazy'||thumb.referrer!=='no-referrer'||thumb.alt!=='')throw Error('Thumbnail attributes');
+if(await page.locator('.post[data-id="8"] .link-preview-thumbnail').getAttribute('src')!==thumbnail)throw Error('Supplied WordPress thumbnail lost');
+await page.locator('.post[data-id="2"]').scrollIntoViewIfNeeded();
+await page.waitForFunction(()=>!document.querySelector('.post[data-id="2"] .link-preview-thumbnail'));
+if(!await page.locator('.post[data-id="2"] .link-preview strong').textContent())throw Error('Broken image lost text card');
+if(await page.locator('.post[data-id="10"] .link-preview-thumbnail').count())throw Error('Missing image reserved thumbnail space');
 await page.locator('.post[data-id="7"] summary').click();
 await page.waitForFunction(()=>document.querySelector('.post[data-id="7"] .link-preview strong')?.textContent.startsWith('A useful title'));
 await page.locator('.post[data-id="9"]').scrollIntoViewIfNeeded();
@@ -58,5 +69,5 @@ widths.push({theme,width});
 }}
 await page.locator('.post[data-id="1"]').scrollIntoViewIfNeeded();
 await page.screenshot({path:'output/playwright/link-preview-mobile.png',fullPage:false});
-return {firstLinkOnly:true,giftLinkPreserved:true,plainUrls:true,secondaryLinksPreserved:true,metadataEscaped:true,sensitivePreviewLazy:true,cachedDuplicateRequests:counts.get(first),maxConcurrent:maximum,fallback:true,widths};
+return {thumbnail,thumbnailSize:thumb.width,brokenImageFallback:true,suppliedImage:true,firstLinkOnly:true,giftLinkPreserved:true,plainUrls:true,secondaryLinksPreserved:true,metadataEscaped:true,sensitivePreviewLazy:true,cachedDuplicateRequests:counts.get(first),maxConcurrent:maximum,fallback:true,widths};
 }
