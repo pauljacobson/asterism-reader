@@ -45,6 +45,10 @@ async (page) => {
   await page.locator('#reply-text').waitFor();
   await page.locator('#conversation .result').waitFor();
   await page.locator('#reply-text').fill('A draft worth keeping');
+  await page.locator('.reader-scroll > .actions [data-do="read"]').click();
+  await page.locator('#reply-text').waitFor();
+  if (await page.locator('#reply-text').inputValue() !== 'A draft worth keeping') throw Error('Reply icon reloaded the open post and lost its draft');
+  if (!await page.locator('#reply-text').evaluate(e => document.activeElement === e)) throw Error('Reply icon did not focus the composer');
   await page.locator('.reader-preferences').click();
   await page.locator('#reader-font').selectOption('serif');
   await page.locator('#reader-size').fill('26');

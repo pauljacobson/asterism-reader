@@ -821,6 +821,12 @@ async function showCodes() {
   );
 }
 async function openPost(id) {
+  // The reply shortcut inside an open post should keep its draft and simply
+  // bring the composer into focus, rather than fetch and replace the reader.
+  if ($("#modal").open && $("#reply-text")?.dataset.id === String(id)) {
+    $("#reply-text").focus();
+    return;
+  }
   // Open immediately so dismissal also cancels the effect of a slow response.
   // Each modal has a generation: a late request cannot reopen a dismissed post
   // or replace a different post's conversation or reply draft.
