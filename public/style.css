@@ -224,8 +224,15 @@ main {
   font-size: 12px;
 }
 .board {
-  columns: 3;
-  column-gap: 22px;
+  /* Row placement keeps the newest-first feed readable across screen sizes. */
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 22px;
+  align-items: start;
+}
+.board > .post {
+  min-width: 0;
+  margin-bottom: 0;
 }
 .post,
 .note {
@@ -679,7 +686,7 @@ dialog::backdrop {
     gap: 15px;
   }
   .board {
-    columns: 2;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .settings-layout {
     grid-template-columns: minmax(0, 1fr) minmax(250px, 0.8fr);
@@ -702,7 +709,7 @@ dialog::backdrop {
     display: inline;
   }
   .board {
-    columns: 1;
+    grid-template-columns: minmax(0, 1fr);
   }
   main {
     padding: 28px 20px 110px;
