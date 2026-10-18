@@ -5,6 +5,7 @@ import { configuration } from "../src/server/config.js";
 import { createApp } from "../src/server/app.js";
 import { Store } from "../src/server/store.js";
 import { hash, seal, unseal, token } from "../src/server/security.js";
+import { accentIds } from "../src/shared/preferences.js";
 const env = {
   APP_ORIGIN: "http://localhost:4321",
   ENCRYPTION_KEY: "a".repeat(64),
@@ -200,6 +201,67 @@ test("private APIs deny anonymous, setup and recovery sessions; CSRF is enforced
       ).response.status,
       403,
     );
+  } finally {
+    await h.finish();
+  }
+});
+test("account accents persist across sessions, accept only supported hues and preserve legacy settings", async () => {
+  const h = await harness();
+  try {
+    h.seed();
+    const legacy = { theme: "dark", font: "serif", size: 22 };
+    h.db.run("UPDATE owner SET preferences=?", JSON.stringify(legacy));
+    assert.deepEqual((await h.refresh()).preferences, {
+      ...legacy,
+      accent: "violet",
+    });
+    for (const accent of accentIds) {
+      const preferences = { ...legacy, accent };
+      const result = await h.request("/preferences", preferences, {
+        method: "PUT",
+      });
+      assert.equal(result.response.status, 200);
+      assert.deepEqual(result.data, preferences);
+      // A second authenticated device reads the account, not browser storage.
+      const uid = h.db.get("SELECT uid FROM owner")!.uid;
+      const id = token();
+      h.db.run(
+        "INSERT INTO sessions(hash,uid,phase,csrf,created,touched,expires) VALUES(?,?,?,?,?,?,?)",
+        hash(id),
+        uid,
+        "full",
+        token(),
+        Date.now(),
+        Date.now(),
+        Date.now() + 60_000,
+      );
+      const other = await h.request("/session", undefined, {
+        headers: { cookie: `asterism=${id}` },
+      });
+      assert.deepEqual(other.data.preferences, preferences);
+    }
+    const before = h.db.get("SELECT preferences FROM owner")!.preferences;
+    const invalid = await h.request(
+      "/preferences",
+      { ...legacy, accent: "#fff; color:red" },
+      { method: "PUT" },
+    );
+    assert.equal(invalid.response.status, 400);
+    assert.equal(
+      h.db.get("SELECT preferences FROM owner")!.preferences,
+      before,
+    );
+    assert.equal(
+      (await h.request("/preferences", legacy, { method: "PUT" })).data.accent,
+      "slate",
+    );
+    const denied = await h.request(
+      "/preferences",
+      { ...legacy, accent: "blue" },
+      { method: "PUT", headers: { "x-csrf-token": "wrong" } },
+    );
+    assert.equal(denied.response.status, 403);
+    assert.equal((await h.refresh()).preferences.accent, "slate");
   } finally {
     await h.finish();
   }

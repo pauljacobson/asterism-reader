@@ -7,8 +7,10 @@
   --ink: #242a42;
   --muted: #636d87;
   --line: #dfe3ef;
-  --accent: #6250cb;
-  --soft: #eeeaff;
+  --accent-light: #6250cb;
+  --soft-light: #eeeaff;
+  --accent-dark: #b3a9ff;
+  --soft-dark: #302e50;
   --blue: #2866ab;
   --coral: #b24b36;
   --danger: #a44231;
@@ -23,6 +25,9 @@ html {
   box-sizing: border-box;
 }
 body {
+  --accent: var(--accent-light);
+  --soft: var(--soft-light);
+  --on-accent: #fff;
   margin: 0;
   background: var(--bg);
   color: var(--ink);
@@ -40,12 +45,51 @@ body[data-theme="dark"] {
   --ink: #f1f2fc;
   --muted: #a9b3ce;
   --line: #303a52;
-  --accent: #b3a9ff;
-  --soft: #302e50;
+  --accent: var(--accent-dark);
+  --soft: var(--soft-dark);
+  --on-accent: #101322;
   --blue: #89c6ff;
   --coral: #fcad98;
   --danger: #fcad98;
   --shadow: 0 8px 24px #070b171a;
+}
+/* Each hue has separate text and highlight shades for light and dark themes. */
+[data-accent="blue"] {
+  --accent-light: #225fb2;
+  --soft-light: #e7effc;
+  --accent-dark: #96c8ff;
+  --soft-dark: #203957;
+}
+[data-accent="teal"] {
+  --accent-light: #06766e;
+  --soft-light: #e1f3ef;
+  --accent-dark: #75dacf;
+  --soft-dark: #193d40;
+}
+[data-accent="rose"] {
+  --accent-light: #b52c62;
+  --soft-light: #fbe8f0;
+  --accent-dark: #ffa6c6;
+  --soft-dark: #47283e;
+}
+[data-accent="amber"] {
+  --accent-light: #8a5700;
+  --soft-light: #fff0d4;
+  --accent-dark: #f4ca76;
+  --soft-dark: #423820;
+}
+[data-accent="slate"] {
+  --accent-light: #52627a;
+  --soft-light: #e9edf4;
+  --accent-dark: #b9c8df;
+  --soft-dark: #303b50;
+}
+/* Explicit violet values also let its swatch keep its hue under another accent. */
+[data-accent="violet"] {
+  --accent-light: #6250cb;
+  --soft-light: #eeeaff;
+  --accent-dark: #b3a9ff;
+  --soft-dark: #302e50;
 }
 button,
 input,
@@ -212,7 +256,7 @@ main {
 }
 .button.primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   border-color: transparent;
 }
 .button:hover:not(:disabled) {
@@ -654,6 +698,59 @@ input[type="range"] {
 .theme-swatch.system {
   background: linear-gradient(90deg, #f1f3fa 50%, #101322 50%);
 }
+.accent-picker {
+  margin: 24px 0 0;
+  padding: 0;
+  min-width: 0;
+  border: 0;
+}
+.accent-picker legend {
+  padding: 0;
+  margin: 0 0 8px;
+}
+.accent-choices {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 16px;
+}
+.accent-choice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 10px;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  cursor: pointer;
+  background: var(--bg);
+}
+.accent-choice input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.accent-choice:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--soft);
+}
+.accent-choice:has(input:focus-visible) {
+  outline: 3px solid var(--accent);
+  outline-offset: 3px;
+}
+.accent-swatch {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--accent-light);
+}
+body[data-theme="dark"] .accent-swatch {
+  background: var(--accent-dark);
+}
+.sample-reading .sample-accent {
+  color: var(--accent);
+  margin-top: 16px;
+}
 .sample-reading {
   font: var(--size)/1.7 var(--reading);
   padding-top: 15px;
@@ -822,6 +919,9 @@ dialog::backdrop {
   }
 }
 @media (max-width: 1050px) {
+  .accent-choices {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
   .top .nav-button {
     padding: 10px;
   }
@@ -986,7 +1086,7 @@ dialog::backdrop {
   margin-top: 18px;
 }
 .post-copy a {
-  color: var(--blue);
+  color: var(--accent);
   overflow-wrap: anywhere;
 }
 .post-copy img {
@@ -1044,9 +1144,6 @@ dialog::backdrop {
 .post-title {
   font: 400 1.3em/1.3 var(--reading);
 }
-.button.primary {
-  color: var(--bg);
-}
 .account-name {
   overflow-wrap: anywhere;
 }
@@ -1091,9 +1188,6 @@ dialog::backdrop {
 /* Orbit navigation uses the same page actions and session gates as the reader. */
 .mobile-nav {
   display: none;
-}
-body[data-theme="dark"] .button.primary {
-  color: #101322;
 }
 body[data-theme="light"] dialog::backdrop {
   background: #20264150;

@@ -9,7 +9,7 @@ export class Store {
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path, { timeout: 5000 });
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
-   CREATE TABLE IF NOT EXISTS owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), uid TEXT UNIQUE NOT NULL, setup INTEGER NOT NULL DEFAULT 0, preferences TEXT NOT NULL DEFAULT '{"theme":"system","font":"sans","size":18}');
+   CREATE TABLE IF NOT EXISTS owner (singleton INTEGER PRIMARY KEY CHECK(singleton=1), uid TEXT UNIQUE NOT NULL, setup INTEGER NOT NULL DEFAULT 0, preferences TEXT NOT NULL DEFAULT '{"theme":"system","font":"sans","size":18,"accent":"violet"}');
    CREATE TABLE IF NOT EXISTS credentials (id TEXT PRIMARY KEY, uid TEXT NOT NULL REFERENCES owner(uid), public_key TEXT NOT NULL, counter INTEGER NOT NULL, transports TEXT NOT NULL, name TEXT NOT NULL, created INTEGER NOT NULL, enabled INTEGER NOT NULL DEFAULT 1);
    CREATE TABLE IF NOT EXISTS sessions (hash TEXT PRIMARY KEY, uid TEXT, phase TEXT NOT NULL, csrf TEXT NOT NULL, recent INTEGER NOT NULL DEFAULT 0, created INTEGER NOT NULL, touched INTEGER NOT NULL, expires INTEGER NOT NULL, recovery_key TEXT);
    CREATE TABLE IF NOT EXISTS challenges (id TEXT PRIMARY KEY, session TEXT NOT NULL REFERENCES sessions(hash) ON DELETE CASCADE, purpose TEXT NOT NULL, data TEXT NOT NULL, expires INTEGER NOT NULL);

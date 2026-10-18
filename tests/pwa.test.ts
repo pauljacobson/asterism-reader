@@ -145,7 +145,7 @@ test("worker caches only explicit public files; never API, OAuth, log exports, m
       (path) =>
         path.startsWith("/assets/") ||
         path.startsWith("/icons/") ||
-        ["/offline.html", "/offline.css"].includes(path),
+        ["/offline.html", "/offline.css", "/favicon.ico"].includes(path),
     ),
   );
   assert.ok(

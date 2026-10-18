@@ -10,6 +10,7 @@ import { security, HttpError, unseal } from "./security.js";
 import { authRouter } from "./auth.js";
 import { wordpressRouter } from "./wordpress.js";
 import { createPreviewService } from "./link-previews.js";
+import { accentIds, accountPreferences } from "../shared/preferences.js";
 export function createApp(
   c: Config,
   db = new Store(c.dbPath),
@@ -70,7 +71,7 @@ export function createApp(
       phase: s.phase,
       hasAccount: !!db.get("SELECT uid FROM owner"),
       recoveryKey: !!s.recovery_key,
-      preferences: owner ? JSON.parse(owner.preferences) : null,
+      preferences: owner ? accountPreferences(owner.preferences) : null,
       connection,
       site: c.wordpress,
       ...(s.phase === "full"
@@ -171,8 +172,14 @@ export function createApp(
         theme: z.enum(["light", "dark", "system"]),
         font: z.enum(["serif", "sans"]),
         size: z.number().int().min(16).max(26),
+        accent: z.enum(accentIds).optional(),
       })
       .parse(req.body);
+    // An older open client may save reading settings without sending an accent.
+    preferences.accent ??= accountPreferences(
+      db.get("SELECT preferences FROM owner WHERE uid=?", req.session.uid!)!
+        .preferences,
+    ).accent;
     db.run(
       "UPDATE owner SET preferences=? WHERE uid=?",
       JSON.stringify(preferences),

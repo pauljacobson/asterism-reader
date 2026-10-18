@@ -13,6 +13,13 @@ test("account, recovery codes and encrypted connection survive a restart and an 
     key = Buffer.alloc(32, 7);
   const db = new Store(path);
   db.run("INSERT INTO owner(singleton,uid,setup) VALUES(1,?,1)", "test-owner");
+  const preferences = {
+    theme: "dark",
+    font: "serif",
+    size: 22,
+    accent: "teal",
+  };
+  db.run("UPDATE owner SET preferences=?", JSON.stringify(preferences));
   db.run("INSERT INTO recovery_codes VALUES(?,?)", hash("code"), "test-owner");
   db.run(
     "INSERT INTO secrets VALUES(?,?)",
@@ -25,6 +32,17 @@ test("account, recovery codes and encrypted connection survive a restart and an 
     restored = new DatabaseSync(copy);
   try {
     assert.equal(reopened.get("SELECT setup FROM owner")!.setup, 1);
+    assert.deepEqual(
+      JSON.parse(reopened.get("SELECT preferences FROM owner")!.preferences),
+      preferences,
+    );
+    assert.deepEqual(
+      JSON.parse(
+        restored.prepare("SELECT preferences FROM owner").get()!
+          .preferences as string,
+      ),
+      preferences,
+    );
     assert.equal(
       reopened.get("SELECT count(*) AS n FROM recovery_codes")!.n,
       1,

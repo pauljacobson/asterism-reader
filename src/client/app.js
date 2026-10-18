@@ -6,6 +6,7 @@ import DOMPurify from "dompurify";
 import { canBoost } from "../shared/boost.js";
 import { installCard, startPwa, installApp, updateApp } from "./pwa.js";
 import { previewImageUrl } from "../shared/preview-image.js";
+import { accentChoices, defaultPreferences } from "../shared/preferences.js";
 const $ = (s) => document.querySelector(s),
   $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (v) =>
@@ -119,9 +120,10 @@ if (invite || location.search)
   );
 const drafts = new Map(),
   known = new Map();
-let prefs = { theme: "system", font: "sans", size: 18 };
+let prefs = { ...defaultPreferences };
 const media = matchMedia("(prefers-color-scheme: dark)");
 function theme() {
+  document.body.dataset.accent = prefs.accent;
   document.body.dataset.theme =
     prefs.theme === "system" ? (media.matches ? "dark" : "light") : prefs.theme;
   document.body.style.setProperty(
@@ -566,7 +568,7 @@ function preferences() {
       "Preferences.",
       "Your reading choices are saved to your account.",
     ) +
-    `<div class="settings-layout"><div><section class="panel"><h2>Appearance</h2><div class="control-label">Theme</div><div class="theme-choice">${["light", "dark", "system"].map((t) => `<button data-theme-choice="${t}" aria-pressed="${prefs.theme === t}"><span class="theme-swatch ${t}"></span>${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div></section><section class="panel"><h2>Reading</h2><label class="control-label" for="font-choice">Font family</label><select id="font-choice"><option value="sans" ${prefs.font === "sans" ? "selected" : ""}>Sans serif</option><option value="serif" ${prefs.font === "serif" ? "selected" : ""}>Serif</option></select><label class="control-label" for="text-size">Text size <span id="size-value">${prefs.size} px</span></label><input id="text-size" type="range" min="16" max="26" value="${prefs.size}"></section></div><section class="panel"><div class="kicker">A live reading sample</div><div class="sample-reading"><h3>A little space for wonder.</h3><p>Stories, small discoveries, and thoughtful conversations. At your own pace.</p></div></section></div>`
+    `<div class="settings-layout"><div><section class="panel"><h2>Appearance</h2><div class="control-label">Theme</div><div class="theme-choice">${["light", "dark", "system"].map((t) => `<button data-theme-choice="${t}" aria-pressed="${prefs.theme === t}"><span class="theme-swatch ${t}"></span>${t[0].toUpperCase() + t.slice(1)}</button>`).join("")}</div><fieldset class="accent-picker"><legend class="control-label">Accent color</legend><p class="muted" id="accent-help">Choose a color for links, buttons, and highlights. Saved to your account across devices.</p><div class="accent-choices">${accentChoices.map(({ id, label }) => `<label class="accent-choice"><input type="radio" name="accent-color" value="${id}" ${prefs.accent === id ? "checked" : ""} aria-describedby="accent-help"><span class="accent-swatch" data-accent="${id}" aria-hidden="true"></span><span>${label}</span></label>`).join("")}</div></fieldset></section><section class="panel"><h2>Reading</h2><label class="control-label" for="font-choice">Font family</label><select id="font-choice"><option value="sans" ${prefs.font === "sans" ? "selected" : ""}>Sans serif</option><option value="serif" ${prefs.font === "serif" ? "selected" : ""}>Serif</option></select><label class="control-label" for="text-size">Text size <span id="size-value">${prefs.size} px</span></label><input id="text-size" type="range" min="16" max="26" value="${prefs.size}"></section></div><section class="panel"><div class="kicker">A live reading sample</div><div class="sample-reading"><h3>A little space for wonder.</h3><p>Stories, small discoveries, and thoughtful conversations. At your own pace.</p><p class="sample-accent">A color that feels like you.</p></div><span class="badge">Your reading space</span></section></div>`
   );
 }
 function account() {
@@ -1402,6 +1404,11 @@ document.addEventListener("input", (e) => {
   }
 });
 document.addEventListener("change", async (e) => {
+  if (e.target.name === "accent-color") {
+    prefs.accent = e.target.value;
+    theme();
+    await savePrefs();
+  }
   if (e.target.id === "log-auto-refresh") {
     logAutoRefresh = e.target.checked;
     logPolling();
