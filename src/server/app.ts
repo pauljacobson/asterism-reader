@@ -201,6 +201,7 @@ export function createApp(
         "/index.html",
         "/sw.js",
         "/manifest.webmanifest",
+        "/favicon.ico",
         "/offline.html",
         "/offline.css",
         "/app.js",

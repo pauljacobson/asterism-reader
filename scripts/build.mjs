@@ -27,7 +27,12 @@ const html = (await readFile("public/index.html", "utf8"))
   .replace("/style.css", stylePath);
 await writeFile("dist/public/index.html", html);
 await cp("public/icons", "dist/public/icons", { recursive: true });
-const resources = ["manifest.webmanifest", "offline.html", "offline.css"];
+const resources = [
+  "manifest.webmanifest",
+  "offline.html",
+  "offline.css",
+  "favicon.ico",
+];
 for (const name of resources)
   await copyFile("public/" + name, "dist/public/" + name);
 const assets = [
@@ -35,6 +40,9 @@ const assets = [
   stylePath,
   "/offline.html",
   "/offline.css",
+  "/favicon.ico",
+  "/icons/favicon-16.png",
+  "/icons/favicon-32.png",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/icon-maskable-512.png",
