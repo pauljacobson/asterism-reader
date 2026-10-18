@@ -574,3 +574,157 @@ test("WordPress proxy preserves reply visibility, attaches token only upstream, 
     await h.finish();
   }
 });
+test("author view loads account posts with validated pagination and private access", async () => {
+  const calls: { url: string; options: any }[] = [];
+  const h = await harness((async (input: any, options: any) => {
+    const url = new URL(String(input));
+    calls.push({ url: url.href, options });
+    if (url.pathname.endsWith("/statuses"))
+      return Response.json([{ id: "42", account: { id: "20" } }], {
+        headers: {
+          link: '<https://wordpress.example.com/api/v1/accounts/20/statuses?max_id=41>; rel="next"',
+        },
+      });
+    return Response.json({ id: "20", display_name: "Sample author" });
+  }) as typeof fetch);
+  try {
+    assert.equal(
+      (await h.request("/wordpress/author/20")).response.status,
+      401,
+    );
+    h.seed();
+    assert.equal(
+      (await h.request("/wordpress/author/20")).response.status,
+      409,
+    );
+    h.db.run(
+      "INSERT INTO secrets VALUES(?,?)",
+      "connection",
+      seal({ access_token: "test-token", account: { id: "10" } }, h.c.key),
+    );
+    const result = await h.request("/wordpress/author/20?cursor=50");
+    assert.equal(result.response.status, 200);
+    assert.equal(result.data.account.id, "20");
+    assert.equal(result.data.posts[0].id, "42");
+    assert.equal(result.data.next, "41");
+    assert.ok(calls.some((c) => c.url.endsWith("/accounts/20")));
+    const statuses = calls.find((c) => c.url.includes("/statuses?"))!;
+    assert.equal(new URL(statuses.url).searchParams.get("max_id"), "50");
+    assert.equal(new URL(statuses.url).searchParams.get("limit"), "30");
+    assert.ok(
+      calls.every(
+        (c) => c.options.headers.Authorization === "Bearer test-token",
+      ),
+    );
+    const count = calls.length;
+    assert.equal(
+      (await h.request("/wordpress/author/https%3A%2F%2Fevil.test")).response
+        .status,
+      400,
+    );
+    assert.equal(
+      (await h.request("/wordpress/author/20?cursor=bad%2Fcursor")).response
+        .status,
+      400,
+    );
+    assert.equal(calls.length, count);
+  } finally {
+    await h.finish();
+  }
+});
+test("author history falls back to bounded Friends timeline filtering when account statuses omit cached posts", async () => {
+  const calls: string[] = [];
+  const h = await harness((async (input: any) => {
+    const u = new URL(String(input));
+    calls.push(u.href);
+    if (u.pathname.endsWith("/accounts/20")) return Response.json({ id: "20" });
+    if (u.pathname.endsWith("/statuses")) return Response.json([]);
+    const max = u.searchParams.get("max_id");
+    const own = { id: max ? "35" : "55", account: { id: "20" } };
+    const posts =
+      max === "40"
+        ? [own]
+        : max === "30"
+          ? []
+          : [
+              { id: "60", account: { id: "21" } },
+              own,
+              { id: "boost", account: { id: "21" }, reblog: own },
+            ];
+    const next = max === "40" ? "30" : max === "30" ? null : "40";
+    return Response.json(posts, {
+      headers: next
+        ? {
+            link: `<https://wordpress.example.com/api/v1/timelines/home?max_id=${next}>; rel="next"`,
+          }
+        : {},
+    });
+  }) as typeof fetch);
+  try {
+    h.seed();
+    h.db.run(
+      "INSERT INTO secrets VALUES(?,?)",
+      "connection",
+      seal({ access_token: "test-token", account: { id: "10" } }, h.c.key),
+    );
+    const first = await h.request("/wordpress/author/20");
+    assert.equal(first.response.status, 200);
+    assert.deepEqual(
+      first.data.posts.map((p: any) => p.id),
+      ["55", "35"],
+    );
+    assert.equal(first.data.next, null);
+    assert.equal(calls.filter((u) => u.includes("/timelines/home?")).length, 3);
+    calls.length = 0;
+    const next = await h.request("/wordpress/author/20?cursor=home:40");
+    assert.equal(next.response.status, 200);
+    assert.deepEqual(
+      next.data.posts.map((p: any) => p.id),
+      ["35"],
+    );
+    assert.ok(!calls.some((u) => u.includes("/statuses")));
+    assert.equal(
+      new URL(
+        calls.find((u) => u.includes("/timelines/home?"))!,
+      ).searchParams.get("max_id"),
+      "40",
+    );
+  } finally {
+    await h.finish();
+  }
+});
+test("sparse author history returns a continuation after three pages instead of scanning without a bound", async () => {
+  let pages = 0;
+  const h = await harness((async (input: any) => {
+    const u = new URL(String(input));
+    if (u.pathname.endsWith("/accounts/20")) return Response.json({ id: "20" });
+    if (u.pathname.endsWith("/statuses")) return Response.json([]);
+    pages++;
+    const next = Number(u.searchParams.get("max_id") || 0) + 1;
+    return Response.json([{ id: String(next), account: { id: "21" } }], {
+      headers: {
+        link: `<https://wordpress.example.com/api/v1/timelines/home?max_id=${next}>; rel="next"`,
+      },
+    });
+  }) as typeof fetch);
+  try {
+    h.seed();
+    h.db.run(
+      "INSERT INTO secrets VALUES(?,?)",
+      "connection",
+      seal({ access_token: "test-token", account: { id: "10" } }, h.c.key),
+    );
+    const first = await h.request("/wordpress/author/20");
+    assert.deepEqual(first.data.posts, []);
+    assert.equal(first.data.next, "home:3");
+    assert.equal(pages, 3);
+    const next = await h.request(
+      "/wordpress/author/20?cursor=" + first.data.next,
+    );
+    assert.deepEqual(next.data.posts, []);
+    assert.equal(next.data.next, "home:6");
+    assert.equal(pages, 6);
+  } finally {
+    await h.finish();
+  }
+});

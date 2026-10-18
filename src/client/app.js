@@ -13,10 +13,12 @@ const esc = (v) =>
         c
       ],
   );
-const url = (v) => {
+const url = (v, allowHttp = false) => {
   try {
     const u = new URL(v);
-    return u.protocol === "https:" ? u.href : "";
+    return u.protocol === "https:" || (allowHttp && u.protocol === "http:")
+      ? u.href
+      : "";
   } catch {
     return "";
   }
@@ -87,11 +89,22 @@ let session,
   lastFocus = null,
   codes = [],
   searchResults = null,
-  loadSeq = 0;
+  loadSeq = 0,
+  authorId = null,
+  authorAccount = null,
+  authorPosts = [],
+  authorCursor = null,
+  authorLoading = false,
+  authorError = "",
+  authorSeq = 0;
 let invite = new URLSearchParams(location.hash.slice(1)).get("setup") || "";
 const connectionNotice = new URLSearchParams(location.search).get("connection");
-if (location.hash || location.search)
-  history.replaceState(null, "", location.pathname);
+if (invite || location.search)
+  history.replaceState(
+    null,
+    "",
+    location.pathname + (invite ? "" : location.hash),
+  );
 const drafts = new Map(),
   known = new Map();
 let prefs = { theme: "system", font: "sans", size: 18 };
@@ -164,7 +177,7 @@ function navigation() {
     ? items
         .map(
           ([id, icon, label]) =>
-            `<button class="nav-button" data-page="${id}" ${page === id ? 'aria-current="page"' : ""}>${ico(icon)}${label}</button>`,
+            `<button class="nav-button" data-page="${id}" ${page === id || (page === "author" && id === "feed") ? 'aria-current="page"' : ""}>${ico(icon)}${label}</button>`,
         )
         .join("")
     : "";
@@ -176,7 +189,7 @@ function navigation() {
       ]
         .map(
           ([id, icon, label]) =>
-            `<button data-page="${id}" ${page === id ? 'aria-current="page"' : ""}>${ico(icon)}${label}</button>`,
+            `<button data-page="${id}" ${page === id || (page === "author" && id === "feed") ? 'aria-current="page"' : ""}>${ico(icon)}${label}</button>`,
         )
         .join("")
     : "";
@@ -187,10 +200,22 @@ function login() {
 function setupView() {
   return `<section class="login panel"><div class="kicker">${session.phase === "recovery" ? "Account recovery" : "Account setup"}</div><h1>${session.phase === "recovery" && !session.recoveryKey ? "Create a new passkey." : "Save a way back in."}</h1><p>${session.phase === "recovery" ? "Finish recovery to regain access. Your previous sessions have been signed out." : "Save your backup codes and confirm that you have kept them somewhere safe before continuing."}</p>${button(session.phase === "recovery" && !session.recoveryKey ? "Create replacement passkey" : "Generate backup codes", session.phase === "recovery" && !session.recoveryKey ? "replacement-key" : "codes", "", "primary")}${button("Sign out", "logout")}</section>`;
 }
-function author(a, date) {
+function author(a, date, source) {
   const name = a?.display_name || a?.username || "Unknown account",
     initials = name.slice(0, 2).toUpperCase();
-  return `<div class="author"><span class="avatar">${esc(initials)}</span><div class="author-info"><strong>${esc(name)}</strong><span class="handle">${esc(a?.acct)}</span></div>${date ? `<time>${esc(new Date(date).toLocaleDateString(undefined, { month: "short", day: "numeric" }))}</time>` : ""}</div>`;
+  const href = a?.id ? "#author=" + encodeURIComponent(a.id) : "";
+  const avatar = href
+    ? `<a class="avatar author-link" href="${esc(href)}" aria-label="Posts by ${esc(name)}">${esc(initials)}</a>`
+    : `<span class="avatar">${esc(initials)}</span>`;
+  const identity = `<strong>${esc(name)}</strong><span class="handle">${esc(a?.acct)}</span>`;
+  const profile = href
+    ? `<a class="author-info author-link" href="${esc(href)}" aria-label="Posts by ${esc(name)} (${esc(a?.acct)})">${identity}</a>`
+    : `<div class="author-info">${identity}</div>`;
+  const timestamp = date
+    ? `<time datetime="${esc(date)}" title="${esc(new Date(date).toLocaleString())}">${esc(new Date(date).toLocaleDateString(undefined, { month: "short", day: "numeric" }))}</time>`
+    : "";
+  const permalink = url(source, true);
+  return `<div class="author">${avatar}${profile}${timestamp ? (permalink ? `<a class="post-date" href="${esc(permalink)}" target="_blank" rel="noopener noreferrer" aria-label="Open original post">${timestamp}</a>` : `<span class="post-date">${timestamp}</span>`) : ""}</div>`;
 }
 function actions(p) {
   return `<div class="actions"><button data-do="like" data-id="${esc(p.id)}" aria-label="${p.favourited ? "Unlike" : "Like"} post" aria-pressed="${!!p.favourited}">${ico("heart")} ${Number(p.favourites_count) || 0}</button><button data-do="read" data-id="${esc(p.id)}" aria-label="Read conversation and reply">${ico("reply")} ${Number(p.replies_count) || 0}</button><button data-do="save" data-id="${esc(p.id)}" aria-label="${p.bookmarked ? "Unsave" : "Save"} post" aria-pressed="${!!p.bookmarked}">${ico("save")}</button></div>`;
@@ -236,7 +261,7 @@ function remember(items) {
 }
 function card(item) {
   const p = item.reblog || item;
-  return `<article class="post" data-id="${esc(p.id)}">${item.reblog ? `<p class="activity-notice">Boosted by ${esc(item.account?.display_name || item.account?.acct)}</p>` : ""}${author(p.account, p.created_at)}${body(p)}<button class="text-button read-button" data-do="read" data-id="${esc(p.id)}">Read & converse →</button>${actions(p)}</article>`;
+  return `<article class="post" data-id="${esc(p.id)}">${item.reblog ? `<p class="activity-notice">Boosted by ${esc(item.account?.display_name || item.account?.acct)}</p>` : ""}${author(p.account, p.created_at, p.url || p.uri)}${body(p)}<button class="text-button read-button" data-do="read" data-id="${esc(p.id)}">Read & converse →</button>${actions(p)}</article>`;
 }
 function emptyConnection() {
   return `<div class="note"><h2>Bring your people here.</h2><p>Connect wordpress.example.com to load your feed, follows, and conversations.</p>${button("Open Account", "account", "", "primary")}</div>`;
@@ -268,6 +293,19 @@ function peopleView() {
     (!session.connection
       ? emptyConnection()
       : `<div class="panel">${following.length ? following.map((a) => `<div class="person-row">${author(a)}<span class="badge">Following</span></div>`).join("") : "<p>No followed accounts loaded yet.</p>"}</div>${peopleCursor ? button("Load more people", "more-people") : ""}`)
+  );
+}
+function authorView() {
+  const name =
+    authorAccount?.display_name || authorAccount?.acct || "this author";
+  return (
+    heading(
+      "An author's constellation",
+      `Posts by ${name}`,
+      "Posts available through your WordPress site, newest first.",
+      button("Back to feed", "back-feed"),
+    ) +
+    `${authorAccount ? author(authorAccount) : ""}<div class="tool-row">${button("Refresh", "refresh-author", authorLoading ? "disabled" : "")}</div>${!session.connection ? emptyConnection() : authorLoading && !authorPosts.length ? '<p role="status">Loading posts…</p>' : authorError && !authorPosts.length ? '<div class="empty">Posts could not be loaded. Try Refresh.</div>' : authorPosts.length ? `<div class="board">${authorPosts.map(card).join("")}</div>` : authorCursor ? '<div class="empty">No matches in this part of your history. Load older posts to keep looking.</div>' : '<div class="empty">No posts by this author are available through your site.</div>'}${authorCursor ? `<div class="load-more">${button(authorLoading ? "Loading…" : "Load older posts", "more-author", authorLoading ? "disabled" : "")}</div>` : ""}`
   );
 }
 function searchView() {
@@ -310,6 +348,7 @@ function render() {
         : (
             {
               feed,
+              author: authorView,
               people: peopleView,
               search: searchView,
               preferences,
@@ -318,6 +357,9 @@ function render() {
           )();
 }
 async function go(p) {
+  authorSeq++;
+  if (location.hash.startsWith("#author="))
+    history.pushState(null, "", location.pathname);
   page = p;
   render();
   $("#main").focus();
@@ -326,6 +368,80 @@ async function go(p) {
   if (page === "feed" && !statuses.length) await loadFeed();
   if (page === "people" && !following.length) await loadPeople();
 }
+async function routeAuthor() {
+  if (session?.phase !== "full") return;
+  const id = new URLSearchParams(location.hash.slice(1)).get("author");
+  if (!id) {
+    if (page === "author") await go("feed");
+    return;
+  }
+  if ($("#modal").open) close();
+  authorId = id;
+  authorAccount = null;
+  authorPosts = [];
+  authorCursor = null;
+  authorError = "";
+  page = "author";
+  render();
+  $("#main").focus();
+  window.scrollTo(0, 0);
+  if (session.connection) await loadAuthor();
+}
+async function loadAuthor(more = false) {
+  const seq = ++authorSeq;
+  authorLoading = true;
+  authorError = "";
+  render();
+  try {
+    const result = await api(
+      "/wordpress/author/" +
+        encodeURIComponent(authorId) +
+        "?" +
+        new URLSearchParams(
+          more && authorCursor ? { cursor: authorCursor } : {},
+        ),
+    );
+    // A late response must not replace another author or a different page.
+    if (seq !== authorSeq || page !== "author") return;
+    authorAccount = result.account;
+    authorPosts = more
+      ? [
+          ...authorPosts,
+          ...result.posts.filter(
+            (p) => !authorPosts.some((x) => x.id === p.id),
+          ),
+        ]
+      : result.posts;
+    authorPosts.sort(
+      (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
+    );
+    authorCursor = result.next;
+    remember(authorPosts);
+  } catch (e) {
+    if (seq !== authorSeq || page !== "author") return;
+    authorError = e.message;
+    showError(e);
+  } finally {
+    if (seq === authorSeq && page === "author") {
+      authorLoading = false;
+      render();
+    }
+  }
+}
+window.addEventListener("hashchange", () => routeAuthor().catch(showError));
+document.addEventListener("click", (event) => {
+  const link = event.target.closest("a.author-link");
+  // Same-author links do not trigger hashchange, but must still close a post.
+  if (
+    link?.hash === location.hash &&
+    $("#modal").open &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.shiftKey &&
+    !event.altKey
+  )
+    close();
+});
 async function loadFeed(more = false) {
   const seq = ++loadSeq;
   const result = await api(
@@ -393,7 +509,11 @@ async function authenticate(reauth = false) {
   await refreshSession();
   if (!reauth) {
     render();
-    if (session.phase === "full" && session.connection) await loadFeed();
+    if (session.phase === "full" && session.connection) {
+      if (new URLSearchParams(location.hash.slice(1)).has("author"))
+        await routeAuthor();
+      else await loadFeed();
+    }
   }
 }
 async function register() {
@@ -420,7 +540,7 @@ async function openPost(id) {
   known.set(String(p.id), p);
   modal(
     "A conversation",
-    `${author(p.account, p.created_at)}${body(p, true)}${actions(p)}<div id="conversation"><p class="muted">Loading conversation…</p></div><form id="reply-form" data-id="${esc(p.id)}"><label class="control-label" for="reply-text">Reply as ${esc(session.connection?.acct)}</label><textarea id="reply-text" data-id="${esc(p.id)}" required maxlength="5000">${esc(drafts.get(String(p.id)) || "")}</textarea><p class="muted">Visibility follows the original post: ${esc(p.visibility || "private")}.</p><div class="dialog-footer"><button class="button primary" type="submit">Send reply</button></div></form>`,
+    `${author(p.account, p.created_at, p.url || p.uri)}${body(p, true)}${actions(p)}<div id="conversation"><p class="muted">Loading conversation…</p></div><form id="reply-form" data-id="${esc(p.id)}"><label class="control-label" for="reply-text">Reply as ${esc(session.connection?.acct)}</label><textarea id="reply-text" data-id="${esc(p.id)}" required maxlength="5000">${esc(drafts.get(String(p.id)) || "")}</textarea><p class="muted">Visibility follows the original post: ${esc(p.visibility || "private")}.</p><div class="dialog-footer"><button class="button primary" type="submit">Send reply</button></div></form>`,
   );
   try {
     const context = await api(
@@ -433,7 +553,7 @@ async function openPost(id) {
     ];
     remember(replies);
     $("#conversation").innerHTML = replies.length
-      ? `<h3 class="spacer">Conversation</h3>${replies.map((x) => `<div class="result">${author(x.account, x.created_at)}${body(x, true)}</div>`).join("")}`
+      ? `<h3 class="spacer">Conversation</h3>${replies.map((x) => `<div class="result">${author(x.account, x.created_at, x.url || x.uri)}${body(x, true)}</div>`).join("")}`
       : '<p class="muted spacer">No other replies returned by your site.</p>';
   } catch {
     if ($("#conversation"))
@@ -545,6 +665,10 @@ async function click(b) {
     await api("/auth/logout", {});
     statuses = [];
     following = [];
+    authorPosts = [];
+    authorAccount = null;
+    authorCursor = null;
+    authorSeq++;
     cursor = null;
     peopleCursor = null;
     searchResults = null;
@@ -621,12 +745,19 @@ async function click(b) {
     await api("/wordpress/disconnect", {});
     statuses = [];
     following = [];
+    authorPosts = [];
+    authorAccount = null;
+    authorCursor = null;
+    authorSeq++;
     known.clear();
     searchResults = null;
     await refreshSession();
     render();
   }
   if (a === "refresh") await loadFeed();
+  if (a === "back-feed") await go("feed");
+  if (a === "refresh-author") await loadAuthor();
+  if (a === "more-author") await loadAuthor(true);
   if (a === "more-feed") await loadFeed(true);
   if (a === "more-people") await loadPeople(true);
   if (a === "read") await openPost(id);
@@ -676,6 +807,10 @@ async function click(b) {
           : "Request submitted. Check your follows for confirmation.",
     );
     following = [];
+    authorPosts = [];
+    authorAccount = null;
+    authorCursor = null;
+    authorSeq++;
     await go("people");
   }
 }
@@ -787,7 +922,11 @@ try {
   if (connectionNotice === "declined")
     notify("WordPress authorization was declined.");
   else if (connectionNotice === "success") notify("WordPress connected.");
-  if (session.phase === "full" && session.connection) await loadFeed();
+  if (session.phase === "full" && session.connection) {
+    if (new URLSearchParams(location.hash.slice(1)).has("author"))
+      await routeAuthor();
+    else await loadFeed();
+  }
 } catch (e) {
   error(e.message);
 }

@@ -277,6 +277,67 @@ export function wordpressRouter(
     );
     res.json({ accounts: result.data, next: cursor(result.link) });
   });
+  r.get("/author/:id", async (req, res) => {
+    const selected = id(req.params.id);
+    const accountId = encodeURIComponent(selected);
+    const continuation = req.query.cursor ? id(req.query.cursor) : null;
+    const fromHome = continuation?.startsWith("home:");
+    const query = new URLSearchParams({ limit: "30" });
+    if (continuation && !fromHome) query.set("max_id", continuation);
+    const account = await api("/api/v1/accounts/" + accountId);
+    if (!account.data?.id)
+      throw new HttpError(502, "WordPress could not load this author's posts.");
+    if (!fromHome) {
+      const posts = await api(
+        "/api/v1/accounts/" + accountId + "/statuses?" + query,
+      );
+      if (!Array.isArray(posts.data))
+        throw new HttpError(
+          502,
+          "WordPress could not load this author's posts.",
+        );
+      if (posts.data.length || continuation) {
+        res.json({
+          account: account.data,
+          posts: posts.data,
+          next: cursor(posts.link),
+        });
+        return;
+      }
+    }
+    // EMA can omit cached Friends posts from remote account timelines. Filter
+    // its authenticated home timeline instead, scanning a bounded batch per click.
+    // The cursor records which timeline to continue; it never contains a URL.
+    let next: string | null = fromHome ? id(continuation!.slice(5)) : null;
+    const posts = new Map<string, any>();
+    const seen = new Set<string>();
+    for (let page = 0; page < 3; page++) {
+      const homeQuery = new URLSearchParams({ limit: "80" });
+      if (next) {
+        seen.add(next);
+        homeQuery.set("max_id", next);
+      }
+      const result = await api("/api/v1/timelines/home?" + homeQuery);
+      if (!Array.isArray(result.data))
+        throw new HttpError(
+          502,
+          "WordPress could not load this author's posts.",
+        );
+      for (const item of result.data) {
+        const original = item.reblog || item;
+        if (String(original.account?.id) === selected)
+          posts.set(String(original.id), original);
+      }
+      next = result.data.length ? cursor(result.link) : null;
+      if (next && seen.has(next)) next = null;
+      if (!next || posts.size >= 30) break;
+    }
+    res.json({
+      account: account.data,
+      posts: [...posts.values()],
+      next: next ? "home:" + next : null,
+    });
+  });
   r.get("/search", async (req, res) => {
     const q = z.string().trim().min(1).max(200).parse(req.query.q),
       type = z

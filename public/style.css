@@ -303,6 +303,20 @@ main {
 .author-info {
   min-width: 0;
 }
+.author-link {
+  color: inherit;
+  text-decoration: none;
+}
+.author-link:hover strong,
+.author-link:hover .handle,
+.author-link:focus-visible strong,
+.author-link:focus-visible .handle {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.avatar.author-link:hover {
+  outline: 2px solid var(--accent);
+}
 .author strong {
   font-size: 12px;
 }
@@ -312,11 +326,14 @@ main {
   display: block;
   overflow-wrap: anywhere;
 }
-.author time {
+.post-date {
   margin-left: auto;
   font-size: 10px;
   color: var(--muted);
   white-space: nowrap;
+}
+.post-date:hover {
+  color: var(--accent);
 }
 .post-copy {
   font: var(--size)/1.65 var(--reading);
