@@ -103,7 +103,8 @@ export function wordpressRouter(
     return { data, link: response.headers.get("link") };
   }
   r.post("/connect", async (req, res) => {
-    sec.fresh(req.session);
+    // The full owner session and CSRF checks already authorize initiation;
+    // WordPress handles its own authorization without another Asterism prompt.
     sec.limit("oauth-connect", 10);
     let client = getSecret<Client>("client");
     if (!client) {

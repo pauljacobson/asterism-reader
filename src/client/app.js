@@ -603,7 +603,6 @@ async function click(b) {
       `<p>Recovery signs out your other sessions. You will create a replacement passkey and save new backup codes before returning to your reader.</p><form id="recovery-form"><label class="control-label" for="recovery-code">Backup code</label><input id="recovery-code" type="text" autocomplete="off" required maxlength="100"><button class="button primary" type="submit">Recover account</button></form>`,
     );
   if (a === "connect") {
-    await authenticate(true);
     const { url } = await api("/wordpress/connect", {});
     location.assign(url);
   }

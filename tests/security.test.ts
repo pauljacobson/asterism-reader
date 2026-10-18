@@ -103,9 +103,21 @@ test("private APIs deny anonymous, setup and recovery sessions; CSRF is enforced
   const h = await harness();
   try {
     assert.equal((await h.request("/wordpress/feed")).response.status, 401);
+    assert.equal(
+      (await h.request("/wordpress/connect", {})).response.status,
+      401,
+    );
     h.seed("setup");
     assert.equal((await h.request("/wordpress/feed")).response.status, 401);
+    assert.equal(
+      (await h.request("/wordpress/connect", {})).response.status,
+      401,
+    );
     h.seed("recovery");
+    assert.equal(
+      (await h.request("/wordpress/connect", {})).response.status,
+      401,
+    );
     assert.equal(
       (
         await h.request(
@@ -117,6 +129,26 @@ test("private APIs deny anonymous, setup and recovery sessions; CSRF is enforced
       401,
     );
     h.seed();
+    assert.equal(
+      (
+        await h.request(
+          "/wordpress/connect",
+          {},
+          { headers: { "x-csrf-token": "wrong" } },
+        )
+      ).response.status,
+      403,
+    );
+    assert.equal(
+      (
+        await h.request(
+          "/wordpress/connect",
+          {},
+          { headers: { origin: "https://attacker.example" } },
+        )
+      ).response.status,
+      403,
+    );
     assert.equal(
       (
         await h.request(
@@ -248,6 +280,11 @@ test("stale verification blocks sensitive changes and revoked sessions stop work
       403,
     );
     h.db.run("DELETE FROM sessions");
+    await h.refresh();
+    assert.equal(
+      (await h.request("/wordpress/connect", {})).response.status,
+      401,
+    );
     assert.equal((await h.request("/wordpress/feed")).response.status, 401);
   } finally {
     await h.finish();
@@ -303,7 +340,11 @@ for (const enforcesPkce of [false, true]) {
     const h = await harness(fake as typeof fetch);
     try {
       h.seed();
-      const { data } = await h.request("/wordpress/connect", {});
+      // An established owner session is sufficient, even outside the five-minute
+      // verification window used for credential-management operations.
+      h.db.run("UPDATE sessions SET recent=0");
+      const { data, response } = await h.request("/wordpress/connect", {});
+      assert.equal(response.status, 200);
       const auth = new URL(data.url);
       const state = auth.searchParams.get("state");
       challenge = auth.searchParams.get("code_challenge")!;
