@@ -8,6 +8,7 @@ import { Store } from "./store.js";
 import { security, HttpError, unseal } from "./security.js";
 import { authRouter } from "./auth.js";
 import { wordpressRouter } from "./wordpress.js";
+import { createPreviewService } from "./link-previews.js";
 export function createApp(
   c: Config,
   db = new Store(c.dbPath),
@@ -107,6 +108,14 @@ export function createApp(
     res.json(preferences);
   });
   app.use("/api/wordpress", wordpressRouter(db, c, sec, fetcher));
+  const previews = createPreviewService();
+  app.post("/api/link-preview", sec.full, async (req, res) => {
+    sec.limit("preview:" + req.session.uid, 120, 60_000);
+    const input = z
+      .object({ url: z.string().min(1).max(4096) })
+      .parse(req.body);
+    res.json({ preview: await previews.get(input.url) });
+  });
   app.use("/api", (_req, res) => res.status(404).json({ error: "Not found." }));
   app.use(
     express.static(resolve("dist/public"), {

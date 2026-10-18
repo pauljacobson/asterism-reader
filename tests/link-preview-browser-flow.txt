@@ -1,0 +1,62 @@
+async(page)=>{
+const first='https://news.example.com/first?gift=keep-me', second='http://other.example.com/second', hidden='https://news.example.com/sensitive', supplied='https://news.example.com/supplied', blocked='https://news.example.com/blocked';
+const account={id:'20',display_name:'Sample author',acct:'author@example.social'};
+const make=(id,content,extra={})=>({id:String(id),account,created_at:'2026-10-18T06:00:00Z',url:'https://example.social/posts/'+id,content,media_attachments:[],tags:[],...extra});
+const posts=[
+make(1,'<p>A story worth reading.</p><p><a href="'+first+'">'+first+'</a></p><p><a href="'+second+'">'+second+'</a></p>'),
+make(2,'<p>Plain URL: https://plain.example.com/story</p>'),
+make(3,'<p><a href="https://described.example.com/story">Read this story</a></p>'),
+make(4,'<p><a href="https://example.social/@author">@author</a> <a href="https://example.social/tags/topic">#topic</a></p>'),
+make(5,'<p><a href="javascript:alert(1)">https://bad.example.com/</a></p>'),
+make(6,'<p><a href="'+first+'">'+first+'</a></p>'),
+make(7,'<p><a href="'+hidden+'">'+hidden+'</a></p>',{sensitive:true,spoiler_text:'Reveal this preview'}),
+make(8,'<p><a href="'+supplied+'">'+supplied+'</a></p>',{card:{url:supplied,title:'Supplied by WordPress',description:'Already available'}}),
+make(9,'<p><a href="'+blocked+'">'+blocked+'</a></p>'),
+make(10,'<p>Inline link '+second+' remains part of the sentence.</p>'),
+make(11,'<p>Line introduction<br><a href="'+first+'">'+first+'</a><br><a href="'+second+'">'+second+'</a></p>')
+];
+const requested=[], counts=new Map();let active=0,maximum=0;
+await page.route('**/api/**',async route=>{
+const u=new URL(route.request().url());
+if(u.pathname==='/api/session')return route.fulfill({json:{csrf:'fixture',phase:'full',hasAccount:true,connection:{id:'owner',acct:'reader'},preferences:{theme:'dark',font:'sans',size:18},passkeys:[],sessions:[],backupRemaining:8}});
+if(u.pathname==='/api/wordpress/feed')return route.fulfill({json:{posts,next:null}});
+if(u.pathname==='/api/link-preview'){
+const {url}=route.request().postDataJSON(); requested.push(url);counts.set(url,(counts.get(url)||0)+1);active++;maximum=Math.max(maximum,active);
+await new Promise(r=>setTimeout(r,40));active--;
+return route.fulfill({json:{preview:url===blocked?null:{url,title:'A useful title & <script>window.injected=true</script>',description:'An article summary <img src=x onerror="window.injected=true">.'}}});
+}
+return route.fulfill({status:404,json:{error:'Unknown fixture route'}});
+});
+await page.setViewportSize({width:1440,height:1000});await page.goto('http://127.0.0.1:4322/');await page.locator('.board > .post').last().waitFor();
+for(const id of [1,2,6,8,9,10])await page.locator('.post[data-id="'+id+'"]').scrollIntoViewIfNeeded();
+await page.waitForFunction(()=>[...document.querySelectorAll('.post[data-id="10"] .link-preview strong')].some(e=>e.textContent.startsWith('A useful title')));
+if(await page.locator('.post[data-id="1"] .link-preview').count()!==1)throw Error('More than one preview');
+if(await page.locator('.post[data-id="1"] .link-preview').getAttribute('href')!==first)throw Error('Wrong first URL or gift query lost');
+if(await page.locator('.post[data-id="1"] .post-copy a[href="'+first+'"]').count())throw Error('Standalone first URL was duplicated');
+if(await page.locator('.post[data-id="1"] .post-copy a').getAttribute('href')!==second)throw Error('Secondary link was lost');
+for(const id of [3,4,5])if(await page.locator('.post[data-id="'+id+'"] .link-preview').count())throw Error('Non-bare/unsafe link got preview');
+for(const id of [1,11]){
+const layout=await page.locator('.post[data-id="'+id+'"]').evaluate(p=>{const card=p.querySelector('.link-preview'),later=p.querySelector('.post-copy a');return {rawFirst:p.querySelectorAll('.post-copy a[href^="https://news.example.com/first"]').length,ordered:!!(card.compareDocumentPosition(later)&Node.DOCUMENT_POSITION_FOLLOWING)};});
+if(layout.rawFirst||!layout.ordered)throw Error('Preview changed link reading order');
+}
+if(requested.includes(hidden))throw Error('Sensitive preview fetched before reveal');
+if(requested.includes(supplied))throw Error('Supplied metadata was fetched again');
+if(counts.get(first)!==1)throw Error('Duplicate URL was not coalesced');
+if(maximum>2)throw Error('Too many concurrent preview requests');
+if(await page.evaluate(()=>!!window.injected)||await page.locator('.link-preview script,.link-preview img,.link-preview iframe').count())throw Error('Metadata HTML executed or embedded');
+await page.locator('.post[data-id="7"] summary').click();
+await page.waitForFunction(()=>document.querySelector('.post[data-id="7"] .link-preview strong')?.textContent.startsWith('A useful title'));
+await page.locator('.post[data-id="9"]').scrollIntoViewIfNeeded();
+if(await page.locator('.post[data-id="9"] .link-preview strong').textContent()!=='Open link')throw Error('Blocked page fallback');
+const widths=[];
+for(const theme of ['light','dark']){
+await page.evaluate(theme=>document.body.dataset.theme=theme,theme);
+for(const width of [1440,820,390,320]){
+await page.setViewportSize({width,height:1000});
+if(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth))throw Error('Overflow at '+width);
+widths.push({theme,width});
+}}
+await page.locator('.post[data-id="1"]').scrollIntoViewIfNeeded();
+await page.screenshot({path:'output/playwright/link-preview-mobile.png',fullPage:false});
+return {firstLinkOnly:true,giftLinkPreserved:true,plainUrls:true,secondaryLinksPreserved:true,metadataEscaped:true,sensitivePreviewLazy:true,cachedDuplicateRequests:counts.get(first),maxConcurrent:maximum,fallback:true,widths};
+}

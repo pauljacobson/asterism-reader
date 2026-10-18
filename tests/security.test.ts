@@ -90,6 +90,37 @@ test("configuration rejects production HTTP, missing secrets, and auth bypass", 
     configuration({ ...env, APP_ORIGIN: "https://reader.example/path" }),
   );
 });
+test("link previews require a full owner session and CSRF; private URLs return no metadata", async () => {
+  const h = await harness();
+  try {
+    for (const phase of ["anonymous", "setup", "recovery"]) {
+      if (phase !== "anonymous") h.seed(phase);
+      assert.equal(
+        (await h.request("/link-preview", { url: "https://example.com" }))
+          .response.status,
+        401,
+      );
+    }
+    h.seed();
+    assert.equal(
+      (
+        await h.request(
+          "/link-preview",
+          { url: "https://example.com" },
+          { headers: { "x-csrf-token": "wrong" } },
+        )
+      ).response.status,
+      403,
+    );
+    const result = await h.request("/link-preview", {
+      url: "http://127.0.0.1/",
+    });
+    assert.equal(result.response.status, 200);
+    assert.deepEqual(result.data, { preview: null });
+  } finally {
+    await h.finish();
+  }
+});
 test("encrypted tokens reject tampering and a different key", () => {
   const key = Buffer.alloc(32, 1),
     sealed = seal({ token: "secret" }, key);

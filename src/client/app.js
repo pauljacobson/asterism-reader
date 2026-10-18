@@ -51,7 +51,7 @@ function content(html) {
 }
 DOMPurify.addHook("afterSanitizeAttributes", (node) => {
   if (node.tagName === "A") {
-    const safe = url(node.getAttribute("href"));
+    const safe = url(node.getAttribute("href"), true);
     if (safe) node.setAttribute("href", safe);
     else node.removeAttribute("href");
     node.setAttribute("rel", "noopener noreferrer");
@@ -220,6 +220,182 @@ function author(a, date, source) {
 function actions(p) {
   return `<div class="actions"><button data-do="like" data-id="${esc(p.id)}" aria-label="${p.favourited ? "Unlike" : "Like"} post" aria-pressed="${!!p.favourited}">${ico("heart")} ${Number(p.favourites_count) || 0}</button><button data-do="read" data-id="${esc(p.id)}" aria-label="Read conversation and reply">${ico("reply")} ${Number(p.replies_count) || 0}</button><button data-do="save" data-id="${esc(p.id)}" aria-label="${p.bookmarked ? "Unsave" : "Save"} post" aria-pressed="${!!p.bookmarked}">${ico("save")}</button></div>`;
 }
+function previewText(link, metadata) {
+  const domain = new URL(link).hostname.replace(/^www\./, "");
+  return `<span class="link-preview-text"><span class="link-preview-domain">${esc(domain)}</span><strong>${esc(String(metadata?.title || "Open link").slice(0, 200))}</strong>${metadata?.description ? `<span class="link-preview-description">${esc(String(metadata.description).slice(0, 320))}</span>` : ""}</span><span class="link-preview-arrow" aria-hidden="true">↗</span>`;
+}
+function linkPreview(html, metadata) {
+  const root = document.createElement("div");
+  root.innerHTML = html;
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const visited = new Set();
+  let node,
+    link = "",
+    standalone = null;
+  while ((node = walker.nextNode())) {
+    const anchor = node.parentElement?.closest("a");
+    if (anchor) {
+      if (visited.has(anchor)) continue;
+      visited.add(anchor);
+      const label = anchor.textContent.trim();
+      const href = url(anchor.getAttribute("href"), true);
+      if (!href || /^[@#]/.test(label)) continue;
+      const visible = label
+        .replace(/^https?:\/\//i, "")
+        .replace(/^www\./i, "")
+        .replace(/(?:…|\.\.\.)$/, "")
+        .toLowerCase();
+      const destination = href
+        .replace(/^https?:\/\//i, "")
+        .replace(/^www\./i, "")
+        .toLowerCase();
+      if (
+        !/^https?:\/\//i.test(label) &&
+        !/^www\./i.test(label) &&
+        (!visible.includes(".") ||
+          /\s/.test(visible) ||
+          !destination.startsWith(visible))
+      )
+        continue;
+      link = href;
+      const paragraph = anchor.closest("p");
+      if (paragraph?.textContent.trim() === label) standalone = paragraph;
+      else if (anchor.parentElement === paragraph) {
+        const neighbor = (direction) => {
+          let sibling = anchor[direction];
+          while (
+            sibling?.nodeType === Node.TEXT_NODE &&
+            !sibling.textContent.trim()
+          )
+            sibling = sibling[direction];
+          return sibling;
+        };
+        const before = neighbor("previousSibling"),
+          after = neighbor("nextSibling");
+        if (
+          (!before || before.nodeName === "BR") &&
+          (!after || after.nodeName === "BR")
+        )
+          standalone = anchor;
+      } else if (
+        anchor.parentElement === root &&
+        root.textContent.trim() === label
+      )
+        standalone = anchor;
+    } else {
+      const match = node.textContent.match(/https?:\/\/[^\s<>"']+/i);
+      if (!match) continue;
+      let value = match[0].replace(/[.,;!?]+$/, "");
+      while (
+        value.endsWith(")") &&
+        (value.match(/\(/g)?.length || 0) < (value.match(/\)/g)?.length || 0)
+      )
+        value = value.slice(0, -1);
+      link = url(value, true);
+      const paragraph = node.parentElement?.closest("p");
+      if (paragraph?.textContent.trim() === value) standalone = paragraph;
+      else if (node.parentElement === root && node.textContent.trim() === value)
+        standalone = node;
+    }
+    if (link) break;
+  }
+  if (!link) return { html, preview: "", after: "" };
+  // Keep inline links in their sentence; replace a URL-only paragraph with a card.
+  let after = "";
+  if (standalone && root.contains(standalone)) {
+    const range = document.createRange();
+    range.setStartAfter(standalone);
+    range.setEnd(root, root.childNodes.length);
+    const remainder = document.createElement("div");
+    remainder.append(range.extractContents());
+    const firstParagraph = remainder.firstElementChild;
+    if (firstParagraph?.tagName === "P") {
+      while (firstParagraph.firstChild?.nodeName === "BR")
+        firstParagraph.firstChild.remove();
+    }
+    after = remainder.innerHTML;
+  }
+  standalone?.remove();
+  const lastParagraph = root.lastElementChild;
+  if (standalone && lastParagraph?.tagName === "P") {
+    while (lastParagraph.lastChild?.nodeName === "BR")
+      lastParagraph.lastChild.remove();
+    if (!lastParagraph.textContent.trim()) lastParagraph.remove();
+  }
+  const supplied =
+    url(metadata?.url, true) === link && metadata?.title ? metadata : null;
+  return {
+    html: root.innerHTML,
+    after,
+    preview: `<a class="link-preview" href="${esc(link)}" target="_blank" rel="noopener noreferrer" data-preview-url="${esc(link)}" ${supplied ? 'data-preview-ready="true"' : ""}>${previewText(link, supplied)}</a>`,
+  };
+}
+const previewCache = new Map(),
+  previewObserved = new Set(),
+  previewJobs = [];
+let previewActive = 0;
+function pumpPreviews() {
+  while (previewActive < 2 && previewJobs.length) {
+    const { link, resolve } = previewJobs.shift();
+    previewActive++;
+    api("/link-preview", { url: link })
+      .then((result) => resolve(result.preview))
+      .catch(() => resolve(null))
+      .finally(() => {
+        previewActive--;
+        pumpPreviews();
+      });
+  }
+}
+function fetchPreview(link) {
+  if (!previewCache.has(link)) {
+    previewCache.set(
+      link,
+      new Promise((resolve) => {
+        previewJobs.push({ link, resolve });
+        pumpPreviews();
+      }),
+    );
+    if (previewCache.size > 256)
+      previewCache.delete(previewCache.keys().next().value);
+  }
+  return previewCache.get(link);
+}
+const previewObserver = new IntersectionObserver(
+  (entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue;
+      const element = entry.target,
+        link = element.dataset.previewUrl;
+      previewObserver.unobserve(element);
+      previewObserved.delete(element);
+      fetchPreview(link).then((metadata) => {
+        if (
+          metadata &&
+          element.isConnected &&
+          element.dataset.previewUrl === link
+        )
+          element.innerHTML = previewText(link, metadata);
+      });
+    }
+  },
+  { rootMargin: "200px" },
+);
+function observePreviews(root) {
+  for (const element of previewObserved) {
+    if (!element.isConnected) {
+      previewObserver.unobserve(element);
+      previewObserved.delete(element);
+    }
+  }
+  for (const element of root.querySelectorAll(
+    ".link-preview:not([data-preview-ready])",
+  )) {
+    element.dataset.previewReady = "true";
+    previewObserved.add(element);
+    previewObserver.observe(element);
+  }
+}
 function body(p, full = false) {
   const media = p.media_attachments || [];
   // Feed cards show a compact gallery; the reading view retains every attachment.
@@ -245,7 +421,8 @@ function body(p, full = false) {
     !full && media.length > visibleMedia.length
       ? `<button class="text-button more-attachments" data-do="read" data-id="${esc(p.id)}">View all ${media.length} attachments →</button>`
       : "";
-  let html = `<div class="post-copy">${content(p.content)}</div>${gallery}${more}`;
+  const linked = linkPreview(content(p.content), p.card);
+  let html = `<div class="post-copy">${linked.html}</div>${linked.preview}${linked.after ? `<div class="post-copy">${linked.after}</div>` : ""}${gallery}${more}`;
   if (p.spoiler_text || p.sensitive)
     html = `<details><summary>${esc(p.spoiler_text || "Sensitive content")}</summary>${html}</details>`;
   return (
@@ -355,6 +532,8 @@ function render() {
               account,
             }[page] || feed
           )();
+  observePreviews($("#main"));
+  if ($("#modal").open) observePreviews($(".dialog-body"));
 }
 async function go(p) {
   authorSeq++;
@@ -486,6 +665,7 @@ function modal(title, html) {
   }
   $("#modal-title").textContent = title;
   $(".dialog-body").innerHTML = html;
+  observePreviews($(".dialog-body"));
   $(".dialog-close").focus();
 }
 function close() {
@@ -555,6 +735,7 @@ async function openPost(id) {
     $("#conversation").innerHTML = replies.length
       ? `<h3 class="spacer">Conversation</h3>${replies.map((x) => `<div class="result">${author(x.account, x.created_at, x.url || x.uri)}${body(x, true)}</div>`).join("")}`
       : '<p class="muted spacer">No other replies returned by your site.</p>';
+    observePreviews($("#conversation"));
   } catch {
     if ($("#conversation"))
       $("#conversation").innerHTML =
