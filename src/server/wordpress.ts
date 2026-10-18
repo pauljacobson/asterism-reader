@@ -312,7 +312,7 @@ export function wordpressRouter(
     const posts = new Map<string, any>();
     const seen = new Set<string>();
     for (let page = 0; page < 3; page++) {
-      const homeQuery = new URLSearchParams({ limit: "80" });
+      const homeQuery = new URLSearchParams({ limit: "30" });
       if (next) {
         seen.add(next);
         homeQuery.set("max_id", next);
@@ -330,7 +330,7 @@ export function wordpressRouter(
       }
       next = result.data.length ? cursor(result.link) : null;
       if (next && seen.has(next)) next = null;
-      if (!next || posts.size >= 30) break;
+      if (!next || posts.size) break;
     }
     res.json({
       account: account.data,

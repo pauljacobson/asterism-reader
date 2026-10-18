@@ -671,10 +671,16 @@ test("author history falls back to bounded Friends timeline filtering when accou
     assert.equal(first.response.status, 200);
     assert.deepEqual(
       first.data.posts.map((p: any) => p.id),
-      ["55", "35"],
+      ["55"],
     );
-    assert.equal(first.data.next, null);
-    assert.equal(calls.filter((u) => u.includes("/timelines/home?")).length, 3);
+    assert.equal(first.data.next, "home:40");
+    assert.equal(calls.filter((u) => u.includes("/timelines/home?")).length, 1);
+    assert.equal(
+      new URL(
+        calls.find((u) => u.includes("/timelines/home?"))!,
+      ).searchParams.get("limit"),
+      "30",
+    );
     calls.length = 0;
     const next = await h.request("/wordpress/author/20?cursor=home:40");
     assert.equal(next.response.status, 200);
