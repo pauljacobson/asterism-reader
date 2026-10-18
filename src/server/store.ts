@@ -3,6 +3,7 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 export class Store {
   readonly db: DatabaseSync;
+  onAudit?: (event: string) => void;
   constructor(path: string) {
     if (path !== ":memory:")
       mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
@@ -45,6 +46,7 @@ export class Store {
   }
   audit(event: string) {
     this.run("INSERT INTO audit(event,at) VALUES(?,?)", event, Date.now());
+    this.onAudit?.(event);
   }
   cleanup() {
     const now = Date.now();

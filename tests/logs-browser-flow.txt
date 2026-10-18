@@ -1,0 +1,84 @@
+async (page) => {
+  page.setDefaultTimeout(8000);
+  const errors = [], requests = [], sizes = [];
+  page.on('pageerror', e => errors.push(e.message));
+  page.on('request', request => { if(new URL(request.url()).pathname === '/api/admin/logs') requests.push(request.url()); });
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('WebAuthn.disable');
+  await cdp.send('WebAuthn.enable');
+  await cdp.send('WebAuthn.addVirtualAuthenticator',{options:{protocol:'ctap2',transport:'internal',hasResidentKey:true,hasUserVerification:true,isUserVerified:true,automaticPresenceSimulation:true}});
+  await page.goto('about:blank');
+  await page.goto('http://localhost:4321/#setup=browser-test-invite');
+  if(await page.evaluate(async()=> (await fetch('/api/admin/logs')).status) !== 401) throw Error('Anonymous log access');
+  await page.getByRole('button',{name:'Create your passkey',exact:true}).click();
+  await page.getByRole('button',{name:'Generate backup codes',exact:true}).click();
+  await page.getByLabel('I have saved my backup codes somewhere safe.').check();
+  await page.getByRole('button',{name:'Confirm saved',exact:true}).click();
+  await page.getByRole('heading',{name:'Account.',exact:true}).waitFor();
+  await page.evaluate(async()=>{for(let i=0;i<65;i++) await fetch('/api/wordpress/feed');});
+  await page.getByRole('button',{name:'Admin',exact:true}).first().click();
+  await page.getByRole('button',{name:'View logs',exact:true}).click();
+  await page.getByRole('heading',{name:'Application logs.',exact:true}).waitFor();
+  await page.locator('.log-entry').first().waitFor();
+  await page.getByRole('combobox',{name:'Category',exact:true}).selectOption('wordpress');
+  await page.getByRole('searchbox',{name:'Search',exact:true}).fill('feed');
+  await page.getByRole('button',{name:'Apply filters',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.log-entry').length===50);
+  if(await page.locator('.log-context').evaluateAll(nodes=>nodes.some(n=>!n.textContent.includes('feed')))) throw Error('Category/search filters failed');
+  await page.getByRole('button',{name:'Load older entries',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.log-entry').length===65);
+  const times = await page.locator('.log-entry time').evaluateAll(nodes=>nodes.map(n=>n.dateTime));
+  if(times.some((t,i)=>i&&t>times[i-1])) throw Error('Log chronology');
+  await page.locator('.log-entry details').first().locator('summary').click();
+  const details = await page.locator('.log-entry pre').first().textContent();
+  const id = JSON.parse(details).requestId;
+  await page.getByRole('searchbox',{name:'Search',exact:true}).fill(id);
+  await page.getByRole('button',{name:'Apply filters',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('.log-entry').length===1);
+  const downloadEvent = page.waitForEvent('download');
+  await page.getByRole('link',{name:'Download NDJSON',exact:true}).click();
+  const download = await downloadEvent;
+  if(!download.suggestedFilename().endsWith('.ndjson')) throw Error('Export filename');
+  await download.saveAs('output/playwright/asterism-filtered-logs.ndjson');
+  const exported = await page.evaluate(async()=> (await fetch(document.querySelector('#log-export').href)).text());
+  if(exported.trim().split('\n').length !== 1 || !exported.includes(id) || exported.includes('fixture-token')) throw Error('Filtered export');
+  await page.getByRole('searchbox',{name:'Search',exact:true}).fill('no such log entry');
+  await page.getByRole('button',{name:'Apply filters',exact:true}).click();
+  await page.getByRole('heading',{name:'No matching logs',exact:true}).waitFor();
+  await page.getByRole('searchbox',{name:'Search',exact:true}).fill('');
+  await page.getByRole('combobox',{name:'Category',exact:true}).selectOption('');
+  await page.getByRole('combobox',{name:'Level',exact:true}).selectOption('error');
+  await page.getByRole('button',{name:'Apply filters',exact:true}).click();
+  await page.getByRole('heading',{name:'No matching logs',exact:true}).waitFor();
+  await page.getByRole('combobox',{name:'Level',exact:true}).selectOption('');
+  await page.getByRole('button',{name:'Apply filters',exact:true}).click();
+  await page.locator('.log-entry').first().waitFor();
+  for(const theme of ['dark','light']) {
+    await page.getByRole('button',{name:'Preferences',exact:true}).first().click();
+    await page.getByRole('button',{name:theme === 'dark' ? 'Dark' : 'Light',exact:true}).click();
+    await page.getByRole('button',{name:'Admin',exact:true}).first().click();
+    await page.getByRole('button',{name:'View logs',exact:true}).click();
+    await page.locator('.log-entry').first().waitFor();
+    for(const [width,height] of [[1440,1000],[820,1180],[600,900],[390,844],[320,640]]) {
+      await page.setViewportSize({width,height});
+      const state=await page.evaluate(()=>({overflow:document.documentElement.scrollWidth>innerWidth, controls:[...document.querySelectorAll('.log-controls input,.log-controls select')].map(e=>{const r=e.getBoundingClientRect();return {left:r.left,right:r.right}})}));
+      if(state.overflow||state.controls.some(r=>r.left<0||r.right>width)) throw Error('Log layout bounds '+JSON.stringify({width,theme,state}));
+      sizes.push({width,height,theme});
+      if(width===390||width===1440) await page.screenshot({path:`output/playwright/logs-${theme}-${width}.png`,fullPage:false});
+    }
+    await page.setViewportSize({width:1440,height:1000});
+  }
+  await page.getByLabel('Refresh every 15 seconds').check();
+  const before = requests.length;
+  await page.waitForTimeout(15_500);
+  if(requests.length<=before) throw Error('Auto refresh did not run');
+  await page.getByRole('button',{name:'Back to Admin',exact:true}).click();
+  const stopped = requests.length;
+  await page.waitForTimeout(15_500);
+  if(requests.length!==stopped) throw Error('Polling continued outside Logs');
+  // Reopening Logs makes only the normal logs request, with no WebAuthn ceremony.
+  await page.getByRole('button',{name:'View logs',exact:true}).click();
+  await page.locator('.log-entry').first().waitFor();
+  if(errors.length) throw Error('Browser errors: '+errors.join('; '));
+  return {passed:true,checks:['real owner session','filters','pagination','details','filtered download','empty state','themes','responsive layout','auto refresh and cleanup'],sizes};
+}

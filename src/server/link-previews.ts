@@ -21,6 +21,7 @@ export type LinkPreview = {
   image: string;
 };
 type Dependencies = {
+  onFailure?: (reason: "timeout" | "network") => void;
   lookup?: (host: string) => Promise<Address[]>;
   request?: (url: URL, address: Address, signal: AbortSignal) => Promise<Page>;
   now?: () => number;
@@ -262,7 +263,15 @@ export function createPreviewService(deps: Dependencies = {}) {
           await new Promise<void>((resolve) => queue.push(resolve));
         else active++;
         try {
-          const value = await retrieve(key).catch(() => null);
+          const value = await retrieve(key).catch((error) => {
+            deps.onFailure?.(
+              error instanceof Error &&
+                ["TimeoutError", "AbortError"].includes(error.name)
+                ? "timeout"
+                : "network",
+            );
+            return null;
+          });
           cache.delete(key);
           cache.set(key, {
             value,

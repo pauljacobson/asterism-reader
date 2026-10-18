@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { dirname, join, resolve } from "node:path";
 export function configuration(env: NodeJS.ProcessEnv = process.env) {
   const origin = z.url().parse(env.APP_ORIGIN);
   const url = new URL(origin);
@@ -33,6 +34,10 @@ export function configuration(env: NodeJS.ProcessEnv = process.env) {
   const dbPath = env.DATABASE_PATH || "./data/asterism.sqlite";
   if (production && !dbPath.startsWith("/data/"))
     throw new Error("Production database must use /data persistent volume.");
+  const logPath =
+    dbPath === ":memory:" ? ":memory:" : join(dirname(dbPath), "logs.sqlite");
+  if (dbPath !== ":memory:" && resolve(logPath) === resolve(dbPath))
+    throw new Error("Logging must use a separate database file.");
   return {
     origin,
     rpId: url.hostname,
@@ -41,6 +46,10 @@ export function configuration(env: NodeJS.ProcessEnv = process.env) {
     bootstrapHash,
     inviteExpires,
     dbPath,
+    logPath,
+    logLevel: z
+      .enum(["debug", "info", "warn", "error"])
+      .parse(env.LOG_LEVEL || "info"),
     port: Number(env.PORT || 4320),
     wordpress: "https://wordpress.example.com",
     cookie: production ? "__Host-asterism" : "asterism",

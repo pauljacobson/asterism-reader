@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { AppLogger, wordpressOperation, failureReason } from "./logging.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import type { Store } from "./store.js";
@@ -53,6 +54,7 @@ export function wordpressRouter(
   c: Config,
   sec: ReturnType<typeof security>,
   fetcher: typeof fetch = fetch,
+  logger?: AppLogger,
 ) {
   const r = Router();
   r.use(sec.full);
@@ -66,8 +68,31 @@ export function wordpressRouter(
       name,
       seal(value, c.key),
     );
-  const call = (path: string, init: RequestInit = {}) =>
-    wordpressRequest(c, path, init, fetcher);
+  const call = async (path: string, init: RequestInit = {}) => {
+    const started = performance.now(),
+      operation = wordpressOperation(path);
+    try {
+      const result = await wordpressRequest(c, path, init, fetcher);
+      const count = Array.isArray(result.data) ? result.data.length : undefined;
+      logger?.write("upstream", result.response.ok ? "info" : "warn", {
+        operation,
+        method: init.method || "GET",
+        status: result.response.status,
+        durationMs: performance.now() - started,
+        count,
+        ...(!result.response.ok ? { reason: "upstream" } : {}),
+      });
+      return result;
+    } catch (error) {
+      logger?.write("upstreamFailed", "error", {
+        operation,
+        method: init.method || "GET",
+        durationMs: performance.now() - started,
+        reason: failureReason(error),
+      });
+      throw error;
+    }
+  };
   const post = (path: string, body: Record<string, string>) =>
     call(path, {
       method: "POST",

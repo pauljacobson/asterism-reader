@@ -75,6 +75,7 @@ const shapes = {
   grid: '<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/>',
   settings:
     '<path d="M3 6h18M3 18h18"/><circle cx="9" cy="6" r="3"/><circle cx="16" cy="18" r="3"/>',
+  admin: '<path d="M4 4h16v16H4zM8 8h8M8 12h8M8 16h5"/>',
   account:
     '<circle cx="12" cy="8" r="4"/><path d="M4 22v-2a8 8 0 0 1 16 0v2"/>',
 };
@@ -158,7 +159,12 @@ async function api(path, body, method) {
   } catch {
     throw new Error("The server is unavailable. Try again.");
   }
-  if (!response.ok) throw new Error(data.error || "The request failed.");
+  if (!response.ok) {
+    const reference = /^[0-9a-f-]{36}$/.test(data.requestId || "")
+      ? ` (Request ID: ${data.requestId})`
+      : "";
+    throw new Error((data.error || "The request failed.") + reference);
+  }
   return data;
 }
 async function refreshSession() {
@@ -209,17 +215,18 @@ function navigation() {
       .toUpperCase();
     $("#account-shortcut").textContent = initials;
     $(".sidebar-bottom").innerHTML =
-      `<button class="nav-button" data-page="preferences" aria-label="Preferences" ${page === "preferences" ? 'aria-current="page"' : ""}>${ico("settings")}<span class="nav-label">Preferences</span></button><button class="nav-button" data-page="account" aria-label="Account" ${page === "account" ? 'aria-current="page"' : ""}>${ico("account")}<span class="nav-label">Account</span></button><div class="account-summary"><span class="avatar">${esc(initials)}</span><div><strong>${esc(name)}</strong><small>${session.connection ? "WordPress connected" : "WordPress not connected"}</small></div></div>`;
+      `<button class="nav-button" data-page="preferences" aria-label="Preferences" ${page === "preferences" ? 'aria-current="page"' : ""}>${ico("settings")}<span class="nav-label">Preferences</span></button><button class="nav-button" data-page="account" aria-label="Account" ${page === "account" ? 'aria-current="page"' : ""}>${ico("account")}<span class="nav-label">Account</span></button><button class="nav-button" data-page="admin" aria-label="Admin" ${["admin", "logs"].includes(page) ? 'aria-current="page"' : ""}>${ico("admin")}<span class="nav-label">Admin</span></button><div class="account-summary"><span class="avatar">${esc(initials)}</span><div><strong>${esc(name)}</strong><small>${session.connection ? "WordPress connected" : "WordPress not connected"}</small></div></div>`;
   } else $(".sidebar-bottom").replaceChildren();
   $(".mobile-nav").innerHTML = full
     ? [
         ...items,
         ["preferences", "settings", "Preferences"],
         ["account", "account", "Account"],
+        ["admin", "admin", "Admin"],
       ]
         .map(
           ([id, icon, label]) =>
-            `<button data-page="${id}" ${page === id || (page === "author" && id === "feed") ? 'aria-current="page"' : ""}>${ico(icon)}${label}</button>`,
+            `<button data-page="${id}" ${page === id || (page === "author" && id === "feed") || (page === "logs" && id === "admin") ? 'aria-current="page"' : ""}>${ico(icon)}${label}</button>`,
         )
         .join("")
     : "";
@@ -567,8 +574,138 @@ function account() {
     `<div class="settings-layout"><div><section class="panel"><h2>Passkeys</h2>${session.passkeys.map((p) => `<div class="setting-row"><div><h3>${esc(p.name)}</h3><p>Added ${esc(new Date(p.created).toLocaleDateString())}</p></div>${button("Remove", "remove-key", `data-id="${esc(p.id)}" ${session.passkeys.length < 2 ? "disabled" : ""}`)}</div>`).join("")}${button("Add a passkey", "add-key")}</section><section class="panel"><h2>Backup codes</h2><p>${session.backupRemaining} unused codes. Save them separately from this app.</p>${button("Replace backup codes", "replace-codes")}</section><section class="panel"><h2>Sessions</h2>${session.sessions.map((s) => `<div class="setting-row"><div><h3>${s.current ? "This browser" : "Another session"}</h3><p>Last active ${esc(new Date(s.touched).toLocaleString())}</p></div>${s.current ? '<span class="badge">Current</span>' : button("Sign out", "revoke-session", `data-id="${esc(s.id)}"`)}</div>`).join("")}${button("Sign out of this browser", "logout")}</section></div><div><section class="panel"><h2>WordPress connection</h2><p>wordpress.example.com</p><p class="account-name">${session.connection ? `Connected as ${esc(session.connection.display_name || session.connection.acct)}` : "Not connected"}</p><p>Authorize Asterism to read your feeds, follow people, reply, and react as your site account.</p>${button(session.connection ? "Disconnect WordPress" : "Connect WordPress", session.connection ? "disconnect" : "connect", "", "primary")}<p>Your WordPress access token is encrypted and kept on the Asterism server.</p></section><section class="panel"><h2>Lists</h2><p>List management and Mastodon list import are planned for a later release.</p></section></div></div>`
   );
 }
+// Keep the controls stable during refreshes so searching and reading details
+// are not interrupted by the optional polling timer.
+let logFilters = { level: "", category: "", hours: "24", search: "" },
+  logResult = null,
+  logLoading = false,
+  logError = "",
+  logSeq = 0,
+  logAutoRefresh = false,
+  logTimer = null;
+function logQuery() {
+  return new URLSearchParams(
+    Object.entries(logFilters).filter(([, value]) => value),
+  );
+}
+function admin() {
+  return (
+    heading(
+      "Administration",
+      "Admin.",
+      "Tools for looking after your reader.",
+    ) +
+    `<section class="panel"><h2>Application logs</h2><p>Review recent activity, diagnose WordPress connection problems, and download diagnostic logs.</p>${button("View logs", "view-logs", "", "primary")}</section>`
+  );
+}
+function logs() {
+  const options = (values, selected) =>
+    values
+      .map(
+        ([value, label]) =>
+          `<option value="${value}" ${value === selected ? "selected" : ""}>${label}</option>`,
+      )
+      .join("");
+  return (
+    heading(
+      "Admin / Logs",
+      "Application logs.",
+      "Recent activity and diagnostics for your reader.",
+      button("Back to Admin", "back-admin"),
+    ) +
+    `<section class="panel logs-panel"><form id="log-filter-form" class="log-controls">
+      <label>Level<select id="log-level">${options(
+        [
+          ["", "All levels"],
+          ["error", "Errors"],
+          ["warn", "Warnings"],
+          ["info", "Information"],
+          ["debug", "Debug"],
+        ],
+        logFilters.level,
+      )}</select></label>
+      <label>Category<select id="log-category">${options(
+        [
+          ["", "All categories"],
+          ["wordpress", "WordPress"],
+          ["auth", "Authentication"],
+          ["preview", "Link previews"],
+          ["request", "Requests"],
+          ["system", "System"],
+        ],
+        logFilters.category,
+      )}</select></label>
+      <label>Period<select id="log-hours">${options(
+        [
+          ["1", "Last hour"],
+          ["24", "Last 24 hours"],
+          ["168", "Last 7 days"],
+          ["", "All retained logs"],
+        ],
+        logFilters.hours,
+      )}</select></label>
+      <label class="log-search">Search<input type="search" id="log-search" maxlength="200" value="${esc(logFilters.search)}" placeholder="Message, operation, or request ID"></label>
+      <button class="button primary" type="submit">Apply filters</button></form>
+      <div class="log-toolbar"><label class="check-label"><input id="log-auto-refresh" type="checkbox" ${logAutoRefresh ? "checked" : ""}> Refresh every 15 seconds</label><div class="flex-wrap">${button("Refresh", "refresh-logs")}<a class="button" id="log-export" href="/api/admin/logs/export?${esc(logQuery())}" download>Download NDJSON</a></div></div>
+      <p class="muted">Logs retain up to 7 days or 10,000 entries. Credentials and post contents are excluded.</p>
+      <div id="log-results" aria-busy="${logLoading}">${logResults()}</div></section>`
+  );
+}
+function logResults() {
+  const entries = logResult?.entries || [];
+  return `${logResult?.persistenceDegraded ? '<p class="error-banner" role="alert">Some recent entries could not be saved. Check Railway console logs.</p>' : ""}${logError ? `<p class="error-banner" role="alert">${esc(logError)}</p>` : ""}
+    <div class="log-summary" aria-label="Matching log summary">${["error", "warn", "info", "debug"].map((level) => `<div><strong>${logResult?.stats[level] || 0}</strong><span>${esc(level)}</span></div>`).join("")}</div>
+    <p class="muted" role="status">${logLoading ? "Loading logs…" : logResult ? `Showing ${entries.length} of ${logResult.total} matching entries · ${Math.ceil(logResult.storedBytes / 1024)} KB retained` : "No logs loaded."}</p>
+    <div class="log-list">${entries.map((entry) => `<article class="log-entry log-${esc(entry.level)}"><div class="log-entry-heading"><span class="log-badge">${esc(entry.level)}</span><strong>${esc(entry.message)}</strong><time datetime="${esc(entry.timestamp)}">${esc(new Date(entry.timestamp).toLocaleString())}</time></div><p class="log-context">${esc(entry.category)}${entry.data.operation ? " · " + esc(entry.data.operation) : ""}${entry.data.status !== undefined ? " · HTTP " + esc(entry.data.status) : ""}${entry.data.durationMs !== undefined ? " · " + esc(entry.data.durationMs) + " ms" : ""}</p><details data-log-id="${entry.id}"><summary>Details${entry.requestId ? " · request " + esc(entry.requestId.slice(0, 8)) : ""}</summary>${entry.requestId ? button("Copy request ID", "copy-log-id", `data-request-id="${esc(entry.requestId)}"`) : ""}<pre>${esc(JSON.stringify({ requestId: entry.requestId, event: entry.event, ...entry.data }, null, 2))}</pre></details></article>`).join("") || (!logLoading && !logError ? '<div class="empty"><h2>No matching logs</h2><p>Try another filter or period.</p></div>' : "")}</div>
+    ${logResult?.next ? button("Load older entries", "older-logs", logLoading ? "disabled" : "") : ""}`;
+}
+function paintLogs() {
+  if (page !== "logs" || !$("#log-results")) return;
+  const expanded = new Set(
+    $$("[data-log-id][open]").map((el) => el.dataset.logId),
+  );
+  $("#log-results").innerHTML = logResults();
+  $("#log-results").setAttribute("aria-busy", String(logLoading));
+  $$("[data-log-id]").forEach((el) => {
+    el.open = expanded.has(el.dataset.logId);
+  });
+  $("[data-do=refresh-logs]").disabled = logLoading;
+  $("#log-export").href = "/api/admin/logs/export?" + logQuery();
+}
+async function loadLogs(older = false) {
+  if (page !== "logs" || session.phase !== "full") return;
+  const seq = ++logSeq,
+    params = logQuery();
+  if (older && logResult?.next) params.set("before", logResult.next);
+  logLoading = true;
+  logError = "";
+  paintLogs();
+  try {
+    const result = await api("/admin/logs?" + params);
+    if (seq !== logSeq || page !== "logs") return;
+    logResult = older
+      ? { ...result, entries: [...logResult.entries, ...result.entries] }
+      : result;
+  } catch (e) {
+    if (seq === logSeq && page === "logs") logError = e.message;
+  } finally {
+    if (seq === logSeq) {
+      logLoading = false;
+      paintLogs();
+    }
+  }
+}
+function logPolling() {
+  clearInterval(logTimer);
+  logTimer = null;
+  if (page === "logs" && session.phase === "full" && logAutoRefresh)
+    logTimer = setInterval(() => {
+      if (!document.hidden && !logLoading) void loadLogs();
+    }, 15_000);
+}
 function render() {
   navigation();
+  logPolling();
   $("#main").innerHTML =
     session.phase === "anonymous"
       ? login()
@@ -582,6 +719,8 @@ function render() {
               search: searchView,
               preferences,
               account,
+              admin,
+              logs,
             }[page] || feed
           )();
   observePreviews($("#main"));
@@ -592,9 +731,12 @@ async function go(p) {
   if (location.hash.startsWith("#author="))
     history.pushState(null, "", location.pathname);
   page = p;
+  logSeq++;
+  logLoading = false;
   render();
   $("#main").focus();
   window.scrollTo(0, 0);
+  if (page === "logs") await loadLogs();
   if (!session.connection) return;
   if (page === "feed" && !statuses.length) await loadFeed();
   if (page === "people" && !following.length) await loadPeople();
@@ -991,12 +1133,23 @@ async function click(b) {
     await go("feed");
     return;
   }
+  if (a === "view-logs") await go("logs");
+  if (a === "back-admin") await go("admin");
+  if (a === "refresh-logs") await loadLogs();
+  if (a === "older-logs") await loadLogs(true);
+  if (a === "copy-log-id") {
+    await navigator.clipboard.writeText(b.dataset.requestId);
+    notify("Request ID copied.");
+  }
   if (a === "dismiss") $("#status-message").replaceChildren();
   if (a === "account") await go("account");
   if (a === "login") await authenticate();
   if (a === "enroll" || a === "replacement-key") await register();
   if (a === "logout") {
     await api("/auth/logout", {});
+    logResult = null;
+    logError = "";
+    logSeq++;
     statuses = [];
     following = [];
     authorPosts = [];
@@ -1194,6 +1347,10 @@ document.addEventListener("input", (e) => {
   }
 });
 document.addEventListener("change", async (e) => {
+  if (e.target.id === "log-auto-refresh") {
+    logAutoRefresh = e.target.checked;
+    logPolling();
+  }
   if (e.target.id === "codes-saved")
     $("[data-do=confirm-codes]").disabled = !e.target.checked;
   if (["font-choice", "reader-font"].includes(e.target.id)) {
@@ -1215,6 +1372,16 @@ document.addEventListener("submit", async (e) => {
   if (submit.disabled) return;
   submit.disabled = true;
   try {
+    if (e.target.id === "log-filter-form") {
+      logFilters = {
+        level: $("#log-level").value,
+        category: $("#log-category").value,
+        hours: $("#log-hours").value,
+        search: $("#log-search").value.trim(),
+      };
+      logResult = null;
+      await loadLogs();
+    }
     if (e.target.id === "recovery-form") {
       await api("/auth/recover", { code: $("#recovery-code").value });
       close();

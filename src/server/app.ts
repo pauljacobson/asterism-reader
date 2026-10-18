@@ -1,4 +1,5 @@
 import express from "express";
+import { AppLogger, levels, categories, type LogFilter } from "./logging.js";
 import helmet from "helmet";
 import cookies from "cookie-parser";
 import { resolve } from "node:path";
@@ -13,10 +14,13 @@ export function createApp(
   c: Config,
   db = new Store(c.dbPath),
   fetcher: typeof fetch = fetch,
+  logger = new AppLogger(c.logPath, c.logLevel),
 ) {
   const app = express(),
     sec = security(db, c);
+  db.onAudit = (event) => logger.audit(event);
   app.disable("x-powered-by");
+  app.use(logger.middleware());
   app.use(
     helmet({
       strictTransportSecurity: false,
@@ -91,6 +95,75 @@ export function createApp(
         : {}),
     });
   });
+  const logFilter = (query: unknown): LogFilter => {
+    const q = z
+      .object({
+        level: z.enum(levels).optional(),
+        category: z.enum(categories).optional(),
+        search: z.string().trim().max(200).optional(),
+        hours: z.coerce.number().int().min(1).max(168).optional(),
+        before: z.coerce
+          .number()
+          .int()
+          .positive()
+          .max(Number.MAX_SAFE_INTEGER)
+          .optional(),
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+      })
+      .strict()
+      .parse(query);
+    return {
+      ...q,
+      since: q.hours ? Date.now() - q.hours * 3600_000 : undefined,
+    };
+  };
+  const readLogs = (filter: LogFilter) => {
+    try {
+      return logger.query(filter);
+    } catch {
+      throw new HttpError(
+        503,
+        "Persistent logs are unavailable. Check Railway logs.",
+      );
+    }
+  };
+  app.get("/api/admin/logs", sec.full, (req, res) => {
+    sec.limit("logs:" + req.session.uid, 60, 60_000);
+    res.json(readLogs(logFilter(req.query)));
+  });
+  app.get("/api/admin/logs/export", sec.full, async (req, res) => {
+    sec.limit("logs-export:" + req.session.uid, 6, 60_000);
+    const filter = logFilter(req.query);
+    let result = readLogs({ ...filter, limit: 100 });
+    res.attachment(
+      `asterism-logs-${new Date().toISOString().slice(0, 10)}.ndjson`,
+    );
+    res.type("application/x-ndjson");
+    // Stream bounded pages and respect backpressure. A cursor excludes newer
+    // arrivals so a busy server cannot make an export run indefinitely.
+    for (let pages = 0; pages < 100; pages++) {
+      for (const entry of result.entries) {
+        if (res.destroyed) return;
+        if (!res.write(JSON.stringify(entry) + "\n")) {
+          await new Promise<void>((resolve) => {
+            const ready = () => {
+              res.off("drain", ready);
+              res.off("close", ready);
+              res.off("error", ready);
+              resolve();
+            };
+            res.once("drain", ready);
+            res.once("close", ready);
+            res.once("error", ready);
+          });
+          if (res.destroyed) return;
+        }
+      }
+      if (!result.next) break;
+      result = readLogs({ ...filter, before: result.next, limit: 100 });
+    }
+    res.end();
+  });
   app.use("/api/auth", authRouter(db, c, sec));
   app.put("/api/preferences", sec.full, (req, res) => {
     const preferences = z
@@ -107,8 +180,10 @@ export function createApp(
     );
     res.json(preferences);
   });
-  app.use("/api/wordpress", wordpressRouter(db, c, sec, fetcher));
-  const previews = createPreviewService();
+  app.use("/api/wordpress", wordpressRouter(db, c, sec, fetcher, logger));
+  const previews = createPreviewService({
+    onFailure: (reason) => logger.write("previewFailed", "warn", { reason }),
+  });
   app.post("/api/link-preview", sec.full, async (req, res) => {
     sec.limit("preview:" + req.session.uid, 120, 60_000);
     const input = z
@@ -138,12 +213,18 @@ export function createApp(
           : err instanceof ZodError
             ? 400
             : 500;
-      if (status === 500)
-        console.error(
-          "Request failed:",
-          err instanceof Error ? err.name : "UnknownError",
-        );
+      res.locals.logReason =
+        status === 400
+          ? "validation"
+          : status === 401 || status === 403
+            ? "authorization"
+            : "unexpected";
+      if (res.headersSent) {
+        res.destroy();
+        return;
+      }
       res.status(status).json({
+        requestId: logger.requestId,
         error:
           err instanceof HttpError
             ? err.message
@@ -153,5 +234,5 @@ export function createApp(
       });
     },
   );
-  return { app, db };
+  return { app, db, logger };
 }
