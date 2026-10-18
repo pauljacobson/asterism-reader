@@ -4,8 +4,10 @@ import { createApp } from "../src/server/app.js";
 import { configuration } from "../src/server/config.js";
 import { hash, seal } from "../src/server/security.js";
 import { Store } from "../src/server/store.js";
+const browserPort = Number(process.env.ASTERISM_BROWSER_PORT || 4321);
+const listFixture = process.env.ASTERISM_LISTS_FIXTURE === "1";
 const config = configuration({
-  APP_ORIGIN: "http://localhost:4321",
+  APP_ORIGIN: `http://localhost:${browserPort}`,
   ENCRYPTION_KEY: "b".repeat(64),
   OWNER_INVITE_HASH: hash("browser-test-invite"),
   OWNER_INVITE_EXPIRES_AT: "2099-01-01T00:00:00Z",
@@ -46,7 +48,13 @@ const post = {
   favourites_count: 2,
   replies_count: 0,
 };
-let follows = false;
+const secondPerson = {
+  ...person,
+  id: "21",
+  acct: "another@example.test",
+  display_name: "Another author",
+};
+let follows = listFixture;
 const fakeFetch: typeof fetch = async (input, init) => {
   const url = new URL(String(input));
   let data: unknown;
@@ -68,7 +76,11 @@ const fakeFetch: typeof fetch = async (input, init) => {
     follows = true;
     data = { id: "20", following: true, requested: false };
   } else if (url.pathname.endsWith("/following"))
-    data = follows ? [person] : [];
+    data = follows
+      ? listFixture && url.searchParams.has("max_id")
+        ? [secondPerson]
+        : [person]
+      : [];
   else if (url.pathname.endsWith("/context"))
     data = { ancestors: [], descendants: [] };
   else if (url.pathname.endsWith("/statuses/42")) data = post;
@@ -90,6 +102,7 @@ const fakeFetch: typeof fetch = async (input, init) => {
       {
         ...post,
         id: "44",
+        account: listFixture ? secondPerson : person,
         content:
           "<p>Longer thoughts deserve a little breathing room.</p><blockquote>Reading at your own pace.</blockquote>",
         spoiler_text: "A thoughtful aside",
@@ -98,10 +111,19 @@ const fakeFetch: typeof fetch = async (input, init) => {
     ];
   else return new Response("{}", { status: 404 });
   return new Response(JSON.stringify(data), {
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...(listFixture &&
+      url.pathname.endsWith("/following") &&
+      !url.searchParams.has("max_id")
+        ? {
+            link: '<https://wordpress.example.com/api/v1/accounts/10/following?max_id=second>; rel="next"',
+          }
+        : {}),
+    },
   });
 };
 const { app } = createApp(config, db, fakeFetch);
-app.listen(4321, "127.0.0.1", () =>
-  console.log("Isolated browser test server ready on 4321"),
+app.listen(browserPort, "127.0.0.1", () =>
+  console.log("Isolated browser test server ready on " + browserPort),
 );

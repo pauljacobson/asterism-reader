@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { canBoost } from "../shared/boost.js";
+import { listsRouter, ReaderLists } from "./lists.js";
 import { AppLogger, wordpressOperation, failureReason } from "./logging.js";
 import { z } from "zod";
 import { createHash } from "node:crypto";
@@ -278,19 +279,61 @@ export function wordpressRouter(
     }
   }
   r.get("/feed", async (req, res) => {
-    const query = new URLSearchParams({ limit: "30" });
-    if (req.query.cursor) query.set("max_id", id(req.query.cursor));
+    const list = req.query.list ? z.uuid().parse(req.query.list) : null;
+    const matches = list
+      ? new ReaderLists(db).matches(req.session.uid!, list, c.wordpress)
+      : () => true;
+    let next: string | null = req.query.cursor ? id(req.query.cursor) : null;
+    const seen = new Set<string>(),
+      posts = new Map<string, any>();
     const path =
       req.query.saved === "true"
         ? "/api/v1/bookmarks"
         : "/api/v1/timelines/home";
-    const result = await api(path + "?" + query);
-    res.json({
-      posts: Array.isArray(result.data) ? result.data : [],
-      next: cursor(result.link),
-    });
+    for (let page = 0; page < (list ? 3 : 1); page++) {
+      const query = new URLSearchParams({ limit: "30" });
+      if (next) {
+        seen.add(next);
+        query.set("max_id", next);
+      }
+      const result = await api(path + "?" + query);
+      if (!Array.isArray(result.data))
+        throw new HttpError(502, "WordPress returned an invalid feed.");
+      for (const item of result.data)
+        if (matches(item)) posts.set(String(item.id), item);
+      next = result.data.length ? cursor(result.link) : null;
+      if (next && seen.has(next)) next = null;
+      if (!next || posts.size) break;
+    }
+    res.json({ posts: [...posts.values()], next });
   });
+  r.use(
+    "/lists",
+    listsRouter(db, sec, c.wordpress, async (next) => {
+      const conn = getSecret<Connection>("connection");
+      if (!conn) throw new HttpError(409, "Connect WordPress first.");
+      const result = await api(
+        "/api/v1/accounts/" +
+          encodeURIComponent(conn.account.id) +
+          "/following?limit=80" +
+          (next ? "&max_id=" + encodeURIComponent(id(next)) : ""),
+      );
+      return { accounts: result.data, next: cursor(result.link) };
+    }),
+  );
   r.get("/following", async (req, res) => {
+    if (req.query.list) {
+      const list = z.uuid().parse(req.query.list);
+      const members = new ReaderLists(db).detail(
+        req.session.uid!,
+        list,
+      ).members;
+      res.json({
+        accounts: members.flatMap((m) => (m.account ? [m.account] : [])),
+        next: null,
+      });
+      return;
+    }
     const conn = getSecret<Connection>("connection");
     if (!conn) throw new HttpError(409, "Connect WordPress first.");
     const result = await api(

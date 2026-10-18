@@ -1159,6 +1159,115 @@ dialog::backdrop {
 .settings-layout {
   align-items: start;
 }
+.lists-layout {
+  display: grid;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.2fr);
+  gap: 24px;
+  align-items: start;
+}
+.list-inline-form,
+.list-actions,
+.feed-filters {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.list-inline-form {
+  margin: 18px 0;
+}
+.list-inline-form input {
+  flex: 1;
+  min-width: min(160px, 100%);
+  width: auto;
+}
+.list-inline-form .button,
+.list-actions .button {
+  margin-top: 0;
+}
+.list-filter {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  max-width: 100%;
+  font-weight: 600;
+}
+.list-filter select {
+  min-width: 0;
+  max-width: 260px;
+}
+.list-picker {
+  display: grid;
+  gap: 8px;
+}
+.list-choose {
+  display: none;
+}
+#list-detail,
+#list-index {
+  scroll-margin-top: 24px;
+}
+.list-pick {
+  display: grid;
+  gap: 5px;
+  text-align: left;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow-wrap: anywhere;
+}
+.list-pick span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.list-pick[aria-pressed="true"] {
+  background: var(--soft);
+  border-color: var(--accent);
+}
+.list-member {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.list-member .author {
+  margin-bottom: 0;
+  min-width: 0;
+}
+.list-unmatched,
+.lists-layout > div,
+.lists-layout input[type="file"] {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.lists-layout select {
+  min-width: 0;
+  max-width: 100%;
+}
+.import-unmatched {
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+.import-unmatched li {
+  margin: 12px 0;
+}
+.import-unmatched small {
+  display: block;
+  color: var(--muted);
+}
+@media (max-width: 1050px) {
+  .lists-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .list-choose {
+    display: block;
+    margin-bottom: 18px;
+  }
+}
 .activity-notice {
   font-size: 11px;
   color: var(--muted);

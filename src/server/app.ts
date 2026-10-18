@@ -52,7 +52,13 @@ export function createApp(
       res.set("Cache-Control", "no-store");
       next();
     },
-    express.json({ limit: "64kb" }),
+    // List exports are bounded again by the CSV reader before any mutation.
+    (req, res, next) =>
+      express.json({
+        limit: req.path.startsWith("/wordpress/lists/import")
+          ? "512kb"
+          : "64kb",
+      })(req, res, next),
     cookies(),
     sec.session,
     sec.csrf,

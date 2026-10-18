@@ -7,6 +7,8 @@ import { canBoost } from "../shared/boost.js";
 import { installCard, startPwa, installApp, updateApp } from "./pwa.js";
 import { previewImageUrl } from "../shared/preview-image.js";
 import { accentChoices, defaultPreferences } from "../shared/preferences.js";
+import { accountIdentity } from "../shared/identity.js";
+import { createListsUI } from "./lists.js";
 const $ = (s) => document.querySelector(s),
   $$ = (s) => [...document.querySelectorAll(s)];
 const esc = (v) =>
@@ -93,6 +95,7 @@ let session,
   following = [],
   cursor = null,
   peopleCursor = null,
+  peopleSeq = 0,
   view = "All",
   query = "",
   searchType = "Posts",
@@ -136,6 +139,27 @@ function theme() {
 }
 media.addEventListener("change", theme);
 theme();
+const listsUI = createListsUI({
+  api,
+  esc,
+  author,
+  button,
+  modal,
+  close,
+  notify,
+  paint: render,
+  navigate: go,
+  changed: async () => {
+    statuses = [];
+    following = [];
+    cursor = null;
+    peopleCursor = null;
+    loadSeq++;
+    peopleSeq++;
+    if (page === "feed" && session.connection) await loadFeed();
+    if (page === "people" && session.connection) await loadPeople();
+  },
+});
 function notify(message) {
   $(".toast").textContent = message;
   $(".toast").hidden = false;
@@ -180,6 +204,7 @@ async function refreshSession() {
     prefs = session.preferences;
     theme();
   }
+  if (session.phase === "full") await listsUI.overview();
   return session;
 }
 function heading(k, t, s, action = "") {
@@ -196,6 +221,7 @@ function navigation() {
     ["feed", "home", "Feed"],
     ["search", "search", "Search"],
     ["people", "people", "People"],
+    ["lists", "grid", "Lists"],
   ];
   $(".top nav").innerHTML = full
     ? items
@@ -226,7 +252,7 @@ function navigation() {
   } else $(".sidebar-bottom").replaceChildren();
   $(".mobile-nav").innerHTML = full
     ? [
-        ...items,
+        ...items.filter(([id]) => id !== "lists"),
         ["preferences", "settings", "Preferences"],
         ["account", "account", "Account"],
         ["admin", "admin", "Admin"],
@@ -523,7 +549,7 @@ function feed() {
       "Follow your curiosity.",
       "The latest from your corner of the Fediverse.",
     ) +
-    `<div class="tool-row"><div class="chips">${["All", "Photos", "Saved"].map((x) => `<button class="chip" data-view="${x}" aria-pressed="${view === x}">${x}</button>`).join("")}</div>${button("Refresh", "refresh")}</div>${!session.connection ? emptyConnection() : list.length ? `<div class="board">${list.map(card).join("")}</div>` : '<div class="empty">No posts loaded here. Refresh your feed or try another view.</div>'}${cursor ? `<div class="load-more">${button("Load older posts", "more-feed")}</div>` : ""}`
+    `<div class="tool-row"><div class="feed-filters">${listsUI.filter("feed-list")}<div class="chips">${["All", "Photos", "Saved"].map((x) => `<button class="chip" data-view="${x}" aria-pressed="${view === x}">${x}</button>`).join("")}</div></div><div class="list-actions">${button("Manage lists", "manage-lists")}${button("Refresh", "refresh")}</div></div>${!session.connection ? emptyConnection() : list.length ? `<div class="board">${list.map(card).join("")}</div>` : `<div class="empty">${cursor && listsUI.selected ? "No matches in this part of your history. Load older posts to keep looking." : "No posts loaded here. Refresh your feed or try another view."}</div>`}${cursor ? `<div class="load-more">${button("Load older posts", "more-feed")}</div>` : ""}`
   );
 }
 function peopleView() {
@@ -532,10 +558,11 @@ function peopleView() {
       "Your orbit",
       "People you follow.",
       "Follows managed by your WordPress site.",
+      button("Manage lists", "manage-lists"),
     ) +
     (!session.connection
       ? emptyConnection()
-      : `<div class="panel">${following.length ? following.map((a) => `<div class="person-row">${author(a)}<span class="badge">Following</span></div>`).join("") : "<p>No followed accounts loaded yet.</p>"}</div>${peopleCursor ? button("Load more people", "more-people") : ""}`)
+      : `<div class="tool-row">${listsUI.filter("people-list")}</div><div class="panel">${following.length ? following.map((a) => `<div class="person-row">${author(a)}<div class="list-actions"><span class="badge">Following</span>${button("Lists", "person-lists", `data-key="${esc(accountIdentity(a, session.site))}"`)}</div></div>`).join("") : "<p>No followed accounts loaded yet.</p>"}</div>${peopleCursor ? button("Load more people", "more-people") : ""}`)
   );
 }
 function authorView() {
@@ -578,7 +605,7 @@ function account() {
       "Account.",
       "Manage how you sign in and connect to your site.",
     ) +
-    `<div class="settings-layout"><div><section class="panel"><h2>Passkeys</h2>${session.passkeys.map((p) => `<div class="setting-row"><div><h3>${esc(p.name)}</h3><p>Added ${esc(new Date(p.created).toLocaleDateString())}</p></div>${button("Remove", "remove-key", `data-id="${esc(p.id)}" ${session.passkeys.length < 2 ? "disabled" : ""}`)}</div>`).join("")}${button("Add a passkey", "add-key")}</section><section class="panel"><h2>Backup codes</h2><p>${session.backupRemaining} unused codes. Save them separately from this app.</p>${button("Replace backup codes", "replace-codes")}</section><section class="panel"><h2>Sessions</h2>${session.sessions.map((s) => `<div class="setting-row"><div><h3>${s.current ? "This browser" : "Another session"}</h3><p>Last active ${esc(new Date(s.touched).toLocaleString())}</p></div>${s.current ? '<span class="badge">Current</span>' : button("Sign out", "revoke-session", `data-id="${esc(s.id)}"`)}</div>`).join("")}${button("Sign out of this browser", "logout")}</section></div><div>${installCard()}<section class="panel"><h2>WordPress connection</h2><p>wordpress.example.com</p><p class="account-name">${session.connection ? `Connected as ${esc(session.connection.display_name || session.connection.acct)}` : "Not connected"}</p><p>Authorize Asterism to read your feeds, follow people, reply, and react as your site account.</p>${button(session.connection ? "Disconnect WordPress" : "Connect WordPress", session.connection ? "disconnect" : "connect", "", "primary")}<p>Your WordPress access token is encrypted and kept on the Asterism server.</p></section><section class="panel"><h2>Lists</h2><p>List management and Mastodon list import are planned for a later release.</p></section></div></div>`
+    `<div class="settings-layout"><div><section class="panel"><h2>Passkeys</h2>${session.passkeys.map((p) => `<div class="setting-row"><div><h3>${esc(p.name)}</h3><p>Added ${esc(new Date(p.created).toLocaleDateString())}</p></div>${button("Remove", "remove-key", `data-id="${esc(p.id)}" ${session.passkeys.length < 2 ? "disabled" : ""}`)}</div>`).join("")}${button("Add a passkey", "add-key")}</section><section class="panel"><h2>Backup codes</h2><p>${session.backupRemaining} unused codes. Save them separately from this app.</p>${button("Replace backup codes", "replace-codes")}</section><section class="panel"><h2>Sessions</h2>${session.sessions.map((s) => `<div class="setting-row"><div><h3>${s.current ? "This browser" : "Another session"}</h3><p>Last active ${esc(new Date(s.touched).toLocaleString())}</p></div>${s.current ? '<span class="badge">Current</span>' : button("Sign out", "revoke-session", `data-id="${esc(s.id)}"`)}</div>`).join("")}${button("Sign out of this browser", "logout")}</section></div><div>${installCard()}<section class="panel"><h2>WordPress connection</h2><p>wordpress.example.com</p><p class="account-name">${session.connection ? `Connected as ${esc(session.connection.display_name || session.connection.acct)}` : "Not connected"}</p><p>Authorize Asterism to read your feeds, follow people, reply, and react as your site account.</p>${button(session.connection ? "Disconnect WordPress" : "Connect WordPress", session.connection ? "disconnect" : "connect", "", "primary")}<p>Your WordPress access token is encrypted and kept on the Asterism server.</p></section><section class="panel"><h2>Lists</h2><p>Organize your follows, import your Mastodon lists, and filter your feed.</p>${button("Manage lists", "manage-lists")}</section></div></div>`
   );
 }
 // Keep the controls stable during refreshes so searching and reading details
@@ -728,6 +755,7 @@ function render() {
               account,
               admin,
               logs,
+              lists: listsUI.page,
             }[page] || feed
           )();
   observePreviews($("#main"));
@@ -740,6 +768,12 @@ async function go(p) {
   page = p;
   logSeq++;
   logLoading = false;
+  // Render Lists once its data is ready, so a late load cannot clear a CSV
+  // the user has just selected or overwrite a list-edit form.
+  if (p === "lists") {
+    await listsUI.load();
+    if (page !== p) return;
+  }
   render();
   $("#main").focus();
   window.scrollTo(0, 0);
@@ -828,6 +862,7 @@ async function loadFeed(more = false) {
     "/wordpress/feed?" +
       new URLSearchParams({
         saved: String(view === "Saved"),
+        ...(listsUI.selected ? { list: listsUI.selected } : {}),
         ...(more && cursor ? { cursor } : {}),
       }),
   );
@@ -843,12 +878,15 @@ async function loadFeed(more = false) {
   if (page === "feed") render();
 }
 async function loadPeople(more = false) {
+  const seq = ++peopleSeq;
   const result = await api(
-    "/wordpress/following" +
-      (more && peopleCursor
-        ? "?cursor=" + encodeURIComponent(peopleCursor)
-        : ""),
+    "/wordpress/following?" +
+      new URLSearchParams({
+        ...(listsUI.selected ? { list: listsUI.selected } : {}),
+        ...(more && peopleCursor ? { cursor: peopleCursor } : {}),
+      }),
   );
+  if (seq !== peopleSeq) return;
   following = more
     ? [
         ...following,
@@ -1076,6 +1114,7 @@ async function search() {
 }
 const pendingReactions = new Set();
 async function click(b) {
+  if (await listsUI.click(b)) return;
   if (b.dataset.page) {
     if (b.dataset.page === "feed" && view === "Saved") {
       view = "All";
@@ -1404,6 +1443,25 @@ document.addEventListener("input", (e) => {
   }
 });
 document.addEventListener("change", async (e) => {
+  if (["feed-list", "people-list"].includes(e.target.id)) {
+    listsUI.select(e.target.value);
+    statuses = [];
+    following = [];
+    cursor = null;
+    peopleCursor = null;
+    loadSeq++;
+    peopleSeq++;
+    render();
+    try {
+      if (session.connection) {
+        if (page === "people") await loadPeople();
+        else await loadFeed();
+      }
+    } catch (error) {
+      showError(error);
+    }
+    return;
+  }
   if (e.target.name === "accent-color") {
     prefs.accent = e.target.value;
     theme();
@@ -1434,6 +1492,7 @@ document.addEventListener("submit", async (e) => {
   if (submit.disabled) return;
   submit.disabled = true;
   try {
+    if (await listsUI.submit(e.target)) return;
     if (e.target.id === "log-filter-form") {
       logFilters = {
         level: $("#log-level").value,
