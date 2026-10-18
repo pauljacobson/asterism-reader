@@ -196,7 +196,10 @@ function actions(p) {
   return `<div class="actions"><button data-do="like" data-id="${esc(p.id)}" aria-label="${p.favourited ? "Unlike" : "Like"} post" aria-pressed="${!!p.favourited}">${ico("heart")} ${Number(p.favourites_count) || 0}</button><button data-do="read" data-id="${esc(p.id)}" aria-label="Read conversation and reply">${ico("reply")} ${Number(p.replies_count) || 0}</button><button data-do="save" data-id="${esc(p.id)}" aria-label="${p.bookmarked ? "Unsave" : "Save"} post" aria-pressed="${!!p.bookmarked}">${ico("save")}</button></div>`;
 }
 function body(p, full = false) {
-  const attachments = (p.media_attachments || [])
+  const media = p.media_attachments || [];
+  // Feed cards show a compact gallery; the reading view retains every attachment.
+  const visibleMedia = full ? media : media.slice(0, 4);
+  const attachments = visibleMedia
     .map((m) => {
       const source = url(m.url),
         preview = url(m.preview_url);
@@ -210,7 +213,14 @@ function body(p, full = false) {
       return "";
     })
     .join("");
-  let html = `<div class="post-copy">${content(p.content)}</div>${attachments}`;
+  const gallery = attachments
+    ? `<div class="post-attachments${visibleMedia.length > 1 ? " multiple" : ""}">${attachments}</div>`
+    : "";
+  const more =
+    !full && media.length > visibleMedia.length
+      ? `<button class="text-button more-attachments" data-do="read" data-id="${esc(p.id)}">View all ${media.length} attachments →</button>`
+      : "";
+  let html = `<div class="post-copy">${content(p.content)}</div>${gallery}${more}`;
   if (p.spoiler_text || p.sensitive)
     html = `<details><summary>${esc(p.spoiler_text || "Sensitive content")}</summary>${html}</details>`;
   return (

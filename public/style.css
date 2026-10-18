@@ -228,11 +228,50 @@ main {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 22px;
-  align-items: start;
+  align-items: stretch;
 }
 .board > .post {
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   margin-bottom: 0;
+}
+.board > .post > .read-button {
+  align-self: flex-start;
+  margin-top: auto;
+  padding-top: 20px;
+}
+.board .author-info {
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+/* Keep portrait media and galleries from setting an oversized row height.
+   Full-size attachments remain available in the conversation view. */
+.board .post-attachments {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+}
+.board .post-attachments > * {
+  min-width: 0;
+}
+.board .post-attachments .post-media {
+  max-height: 16rem;
+  object-fit: contain;
+  margin-top: 0;
+  background: var(--soft);
+}
+.board .post-attachments.multiple {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.board .post-attachments.multiple .post-media {
+  height: 8rem;
+}
+.board audio.post-media {
+  height: 54px;
+}
+.board .more-attachments {
+  margin-top: 10px;
 }
 .post,
 .note {
@@ -869,9 +908,13 @@ dialog::backdrop {
   font-weight: 600;
 }
 .post .post-copy {
-  max-height: 26em;
+  max-height: 15em;
   overflow: hidden;
   position: relative;
+}
+.post .post-copy:focus-within {
+  /* Keyboard users can reach links beyond the visual feed excerpt. */
+  max-height: none;
 }
 .dialog-body .post-copy {
   max-height: none;
