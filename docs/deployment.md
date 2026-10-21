@@ -70,6 +70,8 @@ Install the production environment securely using your service manager, or copy 
 
 Back up the database and retain the encryption key before upgrading. Existing installations must now set `WORDPRESS_URL` explicitly to the **same site used previously**; there is no personal-site fallback. `OWNER_NAME` is optional. Preserve `APP_ORIGIN`, `ENCRYPTION_KEY`, and `DATABASE_PATH`.
 
+Before pushing to a branch that your host deploys automatically, validate its existing environment against the new configuration requirements. Add newly required variables on the host before the update. Disabling GitHub Actions does not disable a host's independent GitHub autodeploy integration. Run `npm run validate` locally before pushing, then verify the host deployed the intended commit and `/healthz` succeeds. Keep one replica and the existing persistent mount. A passing health check confirms startup and database access; also check sign-in and the connected feed after upgrading.
+
 On the first startup of an older database, the app records the configured reader and WordPress URLs. Older data contains no endpoint binding, so the operator must verify those values before that first upgrade. On later starts, mismatches fail before serving requests. This prevents accidentally sending stored credentials to a different configured site. A different reader origin or WordPress site requires a fresh database and new authorization; data migration between sites is not implemented.
 
 Changing a passkey label does not re-enroll existing credentials. Do not run setup over an existing installation or rotate the encryption key without a migration: old encrypted data would become unreadable.

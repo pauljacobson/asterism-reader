@@ -27,6 +27,7 @@ The test runner needs local socket access for HTTP fixtures and `tsx` IPC. Tests
 | `setup.test.ts` | Local/production setup, separate random secrets, invitation hashes/expiry, private permissions, no secrets on stdout, refusal to overwrite, and invalid-input behavior. |
 | `security.test.ts` | Passkey setup gates, sessions, CSRF, encryption, one-use recovery, OAuth state/exchange/error handling, private routes, WordPress actions, configured labels/endpoints, subdirectory pagination, and caching. |
 | `persistence.test.ts` | Account/preferences/recovery/encrypted credentials across database reopening and SQLite online backup. |
+| `upgrade.test.ts` | A frozen legacy database through upgrade and restart: existing production cookie, passkey identity, expired enrollment invitation, preferences, recovery codes, lists, encrypted WordPress token, and deployment binding. All data and upstream responses are synthetic. |
 | `lists.test.ts` | CSV validation, canonical identities, import/edit preservation, list persistence, paginated follows, failed refresh retention, and sparse filtered feeds. |
 | `logging.test.ts` | Redaction, request correlation, authorization, exports, retention, and storage failure fallback. |
 | `link-previews.test.ts` | Metadata extraction, private-address rejection, DNS pinning, redirect validation, bounded retrieval, and coalesced caching. |
