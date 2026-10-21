@@ -13,6 +13,7 @@ async (page) => {
  await page.getByLabel('I have saved my backup codes somewhere safe.').check();
  await page.getByRole('button',{name:'Confirm saved',exact:true}).click();
  await page.getByRole('heading',{name:'Account.',exact:true}).waitFor();
+ if(!await page.getByText('https://wordpress.example.com',{exact:true}).isVisible())throw new Error('Configured WordPress label missing');
  await page.getByRole('button',{name:'Preferences',exact:true}).first().click();
  await page.getByRole('button',{name:'Dark',exact:true}).click();
  await page.getByLabel('Font family').selectOption('serif');
@@ -58,6 +59,7 @@ async (page) => {
  await page.getByRole('button',{name:'Follow someone',exact:true}).click();
  await page.getByLabel('Handle or profile URL').fill('@sample@example.test');
  await page.getByRole('button',{name:'Find person',exact:true}).click();
+ await page.getByText('Follow as reader on https://wordpress.example.com',{exact:true}).waitFor();
  await page.getByRole('button',{name:'Follow on WordPress',exact:true}).click();
  await page.locator('.person-row').waitFor();
  await page.getByRole('button',{name:'Feed',exact:true}).first().click();

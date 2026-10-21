@@ -7,6 +7,7 @@ import { Store } from "../src/server/store.js";
 const browserPort = Number(process.env.ASTERISM_BROWSER_PORT || 4321);
 const listFixture = process.env.ASTERISM_LISTS_FIXTURE === "1";
 const config = configuration({
+  WORDPRESS_URL: "https://wordpress.example.com",
   APP_ORIGIN: `http://localhost:${browserPort}`,
   ENCRYPTION_KEY: "b".repeat(64),
   OWNER_INVITE_HASH: hash("browser-test-invite"),

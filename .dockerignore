@@ -7,6 +7,10 @@ work
 output
 .playwright-cli
 designs
-wordpress.example.com
+docs
 wordpress
 tests
+.DS_Store
+coverage
+test-results
+playwright-report

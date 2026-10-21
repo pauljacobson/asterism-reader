@@ -11,6 +11,7 @@ import {
 import type { Store } from "./store.js";
 import type { Config } from "./config.js";
 import { security, token, hash, same, HttpError } from "./security.js";
+/** Enrollment -> backup confirmation -> full access; recovery repeats the gates. */
 export function authRouter(
   db: Store,
   c: Config,
@@ -80,8 +81,9 @@ export function authRouter(
       rpName: "Asterism Reader",
       rpID: c.rpId,
       userID: new TextEncoder().encode(uid!),
-      userName: "Reader",
-      userDisplayName: "Sample Reader",
+      // This is a passkey-manager label. The random userID binds the credential.
+      userName: c.ownerName,
+      userDisplayName: c.ownerName,
       attestationType: "none",
       // Widely deployed passkey algorithms supported by the stable runtime.
       supportedAlgorithmIDs: [-7, -257],

@@ -1,6 +1,7 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+/** Single-process SQLite persistence; atomic() guards one-use auth transitions. */
 export class Store {
   readonly db: DatabaseSync;
   onAudit?: (event: string) => void;

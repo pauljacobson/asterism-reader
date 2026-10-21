@@ -122,6 +122,7 @@ test("persistent sink and stdout failures do not break application operations", 
 
 async function harness() {
   const c = configuration({
+    WORDPRESS_URL: "https://wordpress.example.com",
     APP_ORIGIN: "http://localhost:4321",
     ENCRYPTION_KEY: "a".repeat(64),
     OWNER_INVITE_HASH: hash("invite"),

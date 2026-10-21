@@ -23,16 +23,14 @@ test(
     assert.ok(["localhost", "127.0.0.1"].includes(target.hostname));
     assert.equal(target.protocol, "http:");
     assert.equal(target.origin, wordpress);
-    const c = {
-      ...configuration({
-        APP_ORIGIN: "http://localhost:4321",
-        ENCRYPTION_KEY: "a".repeat(64),
-        OWNER_INVITE_HASH: hash("test-invite"),
-        OWNER_INVITE_EXPIRES_AT: "2099-01-01T00:00:00Z",
-        DATABASE_PATH: ":memory:",
-      }),
-      wordpress,
-    };
+    const c = configuration({
+      WORDPRESS_URL: wordpress,
+      APP_ORIGIN: "http://localhost:4321",
+      ENCRYPTION_KEY: "a".repeat(64),
+      OWNER_INVITE_HASH: hash("test-invite"),
+      OWNER_INVITE_EXPIRES_AT: "2099-01-01T00:00:00Z",
+      DATABASE_PATH: ":memory:",
+    });
     const db = new Store(":memory:");
     const calls: string[] = [];
     // Observe request paths without replacing any real HTTP responses or logging secrets.

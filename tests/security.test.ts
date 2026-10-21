@@ -7,16 +7,20 @@ import { Store } from "../src/server/store.js";
 import { hash, seal, unseal, token } from "../src/server/security.js";
 import { accentIds } from "../src/shared/preferences.js";
 const env = {
+  WORDPRESS_URL: "https://wordpress.example.com",
   APP_ORIGIN: "http://localhost:4321",
   ENCRYPTION_KEY: "a".repeat(64),
   OWNER_INVITE_HASH: hash("test-invite"),
   OWNER_INVITE_EXPIRES_AT: "2099-01-01T00:00:00Z",
   DATABASE_PATH: ":memory:",
 };
-async function harness(fetcher?: typeof fetch) {
-  const c = configuration(env),
+async function harness(
+  fetcher?: typeof fetch,
+  overrides: NodeJS.ProcessEnv = {},
+) {
+  const c = configuration({ ...env, ...overrides }),
     db = new Store(":memory:"),
-    { app } = createApp(c, db, fetcher);
+    { app, logger } = createApp(c, db, fetcher);
   const server = app.listen(0, "127.0.0.1");
   await new Promise<void>((r) => server.on("listening", r));
   const address = server.address() as { port: number };
@@ -80,6 +84,7 @@ async function harness(fetcher?: typeof fetch) {
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
     db.db.close();
+    logger.close();
   };
   return { db, c, request, refresh, seed, finish };
 }
@@ -88,7 +93,11 @@ test("configuration rejects production HTTP, missing secrets, and auth bypass", 
   assert.throws(() => configuration({ ...env, AUTH_MODE: "development" }));
   assert.throws(() => configuration({ ...env, ENCRYPTION_KEY: "" }));
   assert.throws(() =>
-    configuration({ ...env, APP_ORIGIN: "https://reader.example/path" }),
+    configuration({
+      ...env,
+      WORDPRESS_URL: "https://wordpress.example.com",
+      APP_ORIGIN: "https://reader.example/path",
+    }),
   );
 });
 test("link previews require a full owner session and CSRF; private URLs return no metadata", async () => {
@@ -426,7 +435,11 @@ for (const enforcesPkce of [false, true]) {
       }
       if (u.endsWith("/api/v1/accounts/verify_credentials")) {
         assert.equal(options.headers.Authorization, "Bearer private-token");
-        return Response.json({ id: "10", display_name: "Reader", acct: "reader" });
+        return Response.json({
+          id: "10",
+          display_name: "Reader",
+          acct: "reader",
+        });
       }
       throw new Error("Unexpected upstream request " + u);
     };
@@ -989,6 +1002,93 @@ test("PWA entry points revalidate and APIs remain private while fingerprinted as
       (await h.request("/session")).response.headers.get("cache-control"),
       "no-store",
     );
+  } finally {
+    await h.finish();
+  }
+});
+
+test("configured deployment controls session labels, passkey options, OAuth and subdirectory pagination", async () => {
+  const wordpress = "https://community.example.net/blog";
+  const calls: string[] = [];
+  let nextLink = wordpress + "/api/v1/timelines/home?max_id=older";
+  const fetcher: typeof fetch = async (input, init) => {
+    const address = String(input);
+    calls.push(address);
+    assert.ok(address.startsWith(wordpress + "/"));
+    assert.equal(init?.redirect, "error");
+    const path = new URL(address).pathname;
+    if (path === "/blog/api/v1/apps") {
+      const body = new URLSearchParams(String(init?.body));
+      assert.equal(
+        body.get("redirect_uris"),
+        "http://localhost:4321/api/wordpress/callback",
+      );
+      assert.equal(body.get("website"), "http://localhost:4321");
+      return Response.json({
+        client_id: "synthetic-client",
+        client_secret: "synthetic-secret",
+      });
+    }
+    if (path === "/blog/oauth/token")
+      return Response.json({ access_token: "synthetic-token" });
+    if (path === "/blog/api/v1/accounts/verify_credentials")
+      return Response.json({
+        id: "10",
+        display_name: "Alex Reader",
+        acct: "alex",
+      });
+    if (path === "/blog/api/v1/timelines/home")
+      return Response.json([{ id: "42" }], {
+        headers: { link: `<${nextLink}>; rel="next"` },
+      });
+    throw new Error("Unexpected fixture request: " + path);
+  };
+  const h = await harness(fetcher, {
+    WORDPRESS_URL: wordpress + "/",
+    OWNER_NAME: "Alex Reader",
+  });
+  try {
+    assert.equal((await h.refresh()).site, wordpress);
+    const registration = await h.request("/auth/register/options", {
+      invite: "test-invite",
+    });
+    assert.equal(registration.response.status, 200);
+    assert.equal(registration.data.options.user.name, "Alex Reader");
+    assert.equal(registration.data.options.user.displayName, "Alex Reader");
+    assert.equal(registration.data.options.rp.id, "localhost");
+    assert.notEqual(registration.data.options.user.id, "Alex Reader");
+    h.seed();
+    const connect = await h.request("/wordpress/connect", {});
+    assert.equal(connect.response.status, 200);
+    const authorize = new URL(connect.data.url);
+    assert.equal(
+      authorize.origin + authorize.pathname,
+      wordpress + "/oauth/authorize",
+    );
+    const callback = await h.request(
+      "/wordpress/callback?" +
+        new URLSearchParams({
+          state: authorize.searchParams.get("state")!,
+          code: "synthetic-code",
+        }),
+    );
+    assert.equal(callback.response.status, 302);
+    assert.equal((await h.refresh()).connection.display_name, "Alex Reader");
+    const feed = await h.request("/wordpress/feed");
+    assert.equal(feed.data.next, "older");
+    await h.request("/wordpress/feed?cursor=older");
+    assert.ok(
+      calls.some(
+        (address) => new URL(address).searchParams.get("max_id") === "older",
+      ),
+    );
+    for (const invalid of [
+      "https://elsewhere.example/api/v1/timelines/home?max_id=wrong",
+      "https://community.example.net/other-blog/api/v1/timelines/home?max_id=wrong",
+    ]) {
+      nextLink = invalid;
+      assert.equal((await h.request("/wordpress/feed")).data.next, null);
+    }
   } finally {
     await h.finish();
   }

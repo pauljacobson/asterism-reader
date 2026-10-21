@@ -11,12 +11,15 @@ import { authRouter } from "./auth.js";
 import { wordpressRouter } from "./wordpress.js";
 import { createPreviewService } from "./link-previews.js";
 import { accentIds, accountPreferences } from "../shared/preferences.js";
+import { bindDeployment } from "./deployment.js";
+/** Assemble middleware and routes; tests inject a store and isolated upstream. */
 export function createApp(
   c: Config,
   db = new Store(c.dbPath),
   fetcher: typeof fetch = fetch,
   logger = new AppLogger(c.logPath, c.logLevel),
 ) {
+  bindDeployment(db, c);
   const app = express(),
     sec = security(db, c);
   db.onAudit = (event) => logger.audit(event);
@@ -130,7 +133,7 @@ export function createApp(
     } catch {
       throw new HttpError(
         503,
-        "Persistent logs are unavailable. Check Railway logs.",
+        "Persistent logs are unavailable. Check server console logs.",
       );
     }
   };

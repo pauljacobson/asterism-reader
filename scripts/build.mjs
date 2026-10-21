@@ -4,6 +4,18 @@ import { createHash } from "node:crypto";
 const hash = (value) =>
   createHash("sha256").update(value).digest("hex").slice(0, 16);
 await mkdir("dist/public/assets", { recursive: true });
+// Distributing a minified bundle must retain the upstream license texts.
+const notices = await Promise.all(
+  [
+    [
+      "@simplewebauthn/browser (MIT)",
+      "node_modules/@simplewebauthn/browser/LICENSE.md",
+    ],
+    ["DOMPurify (Apache-2.0)", "node_modules/dompurify/LICENSE"],
+  ].map(async ([name, path]) => `${name}\n\n${await readFile(path, "utf8")}`),
+);
+await writeFile("dist/public/third-party-licenses.txt", notices.join("\n\n"));
+await copyFile("LICENSE", "dist/public/license.txt");
 const result = await build({
   entryPoints: ["src/client/app.js"],
   bundle: true,

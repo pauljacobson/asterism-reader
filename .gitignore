@@ -8,3 +8,7 @@ data/
 .playwright-cli/
 output/
 work/
+.DS_Store
+coverage/
+test-results/
+playwright-report/

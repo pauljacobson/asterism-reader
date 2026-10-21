@@ -51,6 +51,7 @@ export async function wordpressRequest(
   }
   return { response, data };
 }
+/** Server-only OAuth and reader proxy; every route requires a full owner session. */
 export function wordpressRouter(
   db: Store,
   c: Config,
@@ -272,7 +273,12 @@ export function wordpressRouter(
     if (!match) return null;
     try {
       const url = new URL(match[1]);
-      if (url.origin !== c.wordpress) return null;
+      // Follow only a cursor, never an upstream URL. Preserve the configured
+      // site prefix for WordPress installations such as /blog.
+      const site = new URL(c.wordpress);
+      const prefix = site.pathname.replace(/\/+$/, "") + "/api/";
+      if (url.origin !== site.origin || !url.pathname.startsWith(prefix))
+        return null;
       return url.searchParams.get("max_id") || null;
     } catch {
       return null;
