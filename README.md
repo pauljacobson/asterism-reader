@@ -4,6 +4,10 @@ A self-hosted, single-owner reader for a WordPress-powered social feed. Asterism
 
 Read a responsive Mosaic feed, open conversations, reply, like, bookmark, boost public posts, follow people, search available history, and organize follows into lists. Passkeys protect access, with mandatory backup-code confirmation and recovery. Reading preferences sync through the account database. The installable PWA caches the public shell only; feeds and credentials are never available offline.
 
+#### Created using an AI agent
+
+This app was created using an AI coding agent. If you have concerns about code quality, review the code carefully before using or deploying it.
+
 #### Requirements
 
 - Node.js 24 or later and npm, or a Docker host.
