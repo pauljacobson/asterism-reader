@@ -59,7 +59,12 @@ let follows = listFixture;
 const fakeFetch: typeof fetch = async (input, init) => {
   const url = new URL(String(input));
   let data: unknown;
-  if (url.pathname.endsWith("/favourite")) {
+  if (url.pathname === "/api/v1/apps") {
+    data = {
+      client_id: "browser-fixture-client",
+      client_secret: "fixture-secret",
+    };
+  } else if (url.pathname.endsWith("/favourite")) {
     post.favourited = true;
     post.favourites_count = 3;
     data = post;

@@ -135,6 +135,40 @@ export function wordpressRouter(
     // WordPress handles its own authorization without another Asterism prompt.
     sec.limit("oauth-connect", 10);
     let client = getSecret<Client>("client");
+    if (client && !getSecret<Connection>("connection")) {
+      // Registration can be removed at the provider independently of this app.
+      // Authenticate the cached confidential client before a browser redirect;
+      // an app token checks registration without granting access as the owner.
+      const check = await post("/oauth/token", {
+        ...client,
+        grant_type: "client_credentials",
+        scope: "read",
+      });
+      if (
+        [400, 401].includes(check.response.status) &&
+        check.data.error === "invalid_client"
+      ) {
+        sec.alive(req.session);
+        db.run("DELETE FROM secrets WHERE name='client'");
+        client = null;
+      } else {
+        if (!check.response.ok || !check.data.access_token)
+          throw new HttpError(
+            502,
+            "WordPress could not verify Asterism's registration. Try again.",
+          );
+        // This temporary validation token is never used for reader requests.
+        const revoked = await post("/oauth/revoke", {
+          ...client,
+          token: String(check.data.access_token),
+        });
+        if (!revoked.response.ok)
+          throw new HttpError(
+            502,
+            "WordPress could not finish verifying Asterism's registration. Try again.",
+          );
+      }
+    }
     if (!client) {
       const { response, data } = await post("/api/v1/apps", {
         client_name: "Asterism Reader",
@@ -151,6 +185,7 @@ export function wordpressRouter(
       sec.alive(req.session);
       putSecret("client", client);
     }
+    sec.alive(req.session);
     const state = token(),
       verifier = token(),
       pkce = createHash("sha256").update(verifier).digest("base64url");
@@ -164,7 +199,9 @@ export function wordpressRouter(
       hash(state),
       req.session.hash,
       "oauth",
-      seal({ verifier }, c.key),
+      // Pin credentials to this attempt so another browser's registration
+      // replacement cannot change the client used to exchange this code.
+      seal({ verifier, client }, c.key),
       Date.now() + 600_000,
     );
     const url = new URL(c.wordpress + "/oauth/authorize");
@@ -197,8 +234,15 @@ export function wordpressRouter(
       return;
     }
     const code = z.string().max(2000).parse(req.query.code),
-      { verifier } = unseal<{ verifier: string }>(row.data, c.key),
-      client = getSecret<Client>("client")!;
+      attempt = unseal<{ verifier: string; client?: Client }>(row.data, c.key),
+      { verifier } = attempt,
+      // Accept attempts begun before this version was deployed, too.
+      client = attempt.client || getSecret<Client>("client");
+    if (!client)
+      throw new HttpError(
+        400,
+        "WordPress connection expired. Start again from Account.",
+      );
     const body = {
       ...client,
       code,
@@ -226,6 +270,7 @@ export function wordpressRouter(
           "Could not verify the connected WordPress identity.",
         );
       sec.alive(req.session);
+      putSecret("client", client);
       putSecret("connection", {
         access_token: accessToken,
         account: {
@@ -244,7 +289,8 @@ export function wordpressRouter(
     }
   });
   r.post("/disconnect", async (req, res) => {
-    sec.fresh(req.session);
+    // Full owner authentication and the router's CSRF checks authorize this
+    // connection change without another passkey ceremony.
     const conn = getSecret<Connection>("connection"),
       client = getSecret<Client>("client");
     if (conn && client) {
@@ -258,7 +304,9 @@ export function wordpressRouter(
           "WordPress could not revoke access. Try again.",
         );
     }
+    sec.alive(req.session);
     db.run("DELETE FROM secrets WHERE name='connection'");
+    db.run("DELETE FROM challenges WHERE purpose='oauth'");
     db.audit("wordpress-disconnected");
     res.json({ ok: true });
   });

@@ -39,7 +39,7 @@ The browser never receives an OAuth client secret or access token. `GET /api/ses
 
 - **Anonymous:** can request an enrollment challenge only with a valid expiring invitation, or attempt passkey login/recovery.
 - **Setup:** enrolled passkey exists, but private reader routes remain blocked until newly generated backup codes are acknowledged.
-- **Full:** can read and act through WordPress. Credential changes, disconnection, and backup replacement require recent verification.
+- **Full:** can read and act through WordPress, including connecting and disconnecting with the existing session and CSRF protection. Credential changes, session management, and backup replacement require recent verification.
 - **Recovery:** a one-use code revokes previous sessions; a replacement passkey and confirmed new backup codes are required. The pending replacement key cannot sign in until confirmation; old credentials are then removed.
 
 The owner has a random persistent ID. `OWNER_NAME` is presentation only. Registration and login enforce the configured RP hostname, exact origin, and user verification. Challenges are stored in SQLite, bound to a session and purpose, and consumed atomically. Sessions have 24-hour idle and seven-day absolute limits. Production uses Secure/HttpOnly/SameSite=Lax `__Host-` cookies.

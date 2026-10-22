@@ -394,6 +394,244 @@ test("stale verification blocks sensitive changes and revoked sessions stop work
 });
 // Both official EMA (which ignores PKCE) and enforcing servers must receive
 // exactly one genuine exchange. Never spend a user's code on a negative probe.
+test("reconnect replaces a rejected cached OAuth client before sending the browser to WordPress", async () => {
+  const h = await harness((async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    const body = new URLSearchParams(String(init?.body));
+    if (
+      path === "/oauth/token" &&
+      body.get("grant_type") === "client_credentials"
+    )
+      return Response.json(
+        {
+          error: "invalid_client",
+          error_description: "The client id supplied is invalid",
+        },
+        { status: 401 },
+      );
+    if (path === "/api/v1/apps")
+      return Response.json({
+        client_id: "new-client",
+        client_secret: "new-secret",
+      });
+    throw new Error("Unexpected upstream request " + path);
+  }) as typeof fetch);
+  try {
+    h.seed();
+    h.db.run("UPDATE sessions SET recent=0");
+    h.db.run(
+      "INSERT INTO secrets VALUES(?,?)",
+      "client",
+      seal(
+        { client_id: "deleted-client", client_secret: "old-secret" },
+        h.c.key,
+      ),
+    );
+    const result = await h.request("/wordpress/connect", {});
+    assert.equal(result.response.status, 200);
+    assert.equal(
+      new URL(result.data.url).searchParams.get("client_id"),
+      "new-client",
+    );
+    assert.ok(!JSON.stringify(result.data).includes("new-secret"));
+  } finally {
+    await h.finish();
+  }
+});
+test("disconnect uses the established owner session, revokes access and invalidates pending consent", async () => {
+  let revoked = false;
+  const h = await harness((async (input, init) => {
+    assert.equal(new URL(String(input)).pathname, "/oauth/revoke");
+    const body = new URLSearchParams(String(init?.body));
+    assert.equal(body.get("token"), "connected-token");
+    assert.equal(body.get("client_secret"), "secret");
+    revoked = true;
+    return Response.json({});
+  }) as typeof fetch);
+  try {
+    h.seed();
+    h.db.run("UPDATE sessions SET recent=0");
+    h.db.run(
+      "INSERT INTO secrets VALUES(?,?)",
+      "client",
+      seal({ client_id: "client", client_secret: "secret" }, h.c.key),
+    );
+    h.db.run(
+      "INSERT INTO secrets VALUES(?,?)",
+      "connection",
+      seal({ access_token: "connected-token", account: { id: "10" } }, h.c.key),
+    );
+    const begin = await h.request("/wordpress/connect", {});
+    const state = new URL(begin.data.url).searchParams.get("state");
+    assert.equal(
+      (
+        await h.request(
+          "/wordpress/disconnect",
+          {},
+          { headers: { "x-csrf-token": "wrong" } },
+        )
+      ).response.status,
+      403,
+    );
+    assert.equal(revoked, false);
+    assert.equal(
+      (await h.request("/wordpress/disconnect", {})).response.status,
+      200,
+    );
+    assert.equal(revoked, true);
+    assert.equal((await h.refresh()).connection, null);
+    assert.equal(
+      (await h.request("/wordpress/callback?code=late&state=" + state)).response
+        .status,
+      400,
+    );
+  } finally {
+    await h.finish();
+  }
+});
+test("reconnect preserves a valid registration and exchanges the consent code with its original client", async () => {
+  const grants: string[] = [];
+  const h = await harness((async (input, init) => {
+    const path = new URL(String(input)).pathname;
+    const body = new URLSearchParams(String(init?.body));
+    if (path === "/oauth/token") {
+      grants.push(body.get("grant_type")!);
+      assert.equal(body.get("client_id"), "kept-client");
+      assert.equal(body.get("client_secret"), "kept-secret");
+      if (body.get("grant_type") === "client_credentials") {
+        assert.equal(body.get("scope"), "read");
+        return Response.json({ access_token: "app-token" });
+      }
+      assert.equal(body.get("code"), "consent-code");
+      return Response.json({ access_token: "owner-token" });
+    }
+    if (path === "/oauth/revoke") {
+      assert.equal(body.get("token"), "app-token");
+      return Response.json({});
+    }
+    if (path === "/api/v1/accounts/verify_credentials") {
+      assert.equal(
+        (init?.headers as Record<string, string>).Authorization,
+        "Bearer owner-token",
+      );
+      return Response.json({ id: "10", acct: "reader" });
+    }
+    throw new Error("Unexpected upstream request " + path);
+  }) as typeof fetch);
+  try {
+    h.seed();
+    h.db.run("UPDATE sessions SET recent=0");
+    h.db.run(
+      "INSERT INTO secrets VALUES(?,?)",
+      "client",
+      seal({ client_id: "kept-client", client_secret: "kept-secret" }, h.c.key),
+    );
+    const start = await h.request("/wordpress/connect", {});
+    assert.equal(start.response.status, 200);
+    const url = new URL(start.data.url);
+    assert.equal(url.searchParams.get("client_id"), "kept-client");
+    // Another attempt may replace shared registration while consent is open.
+    h.db.run(
+      "UPDATE secrets SET value=? WHERE name='client'",
+      seal(
+        { client_id: "other-client", client_secret: "other-secret" },
+        h.c.key,
+      ),
+    );
+    const callback = await h.request(
+      "/wordpress/callback?code=consent-code&state=" +
+        url.searchParams.get("state"),
+    );
+    assert.equal(callback.response.status, 302);
+    assert.equal((await h.refresh()).connection.id, "10");
+    assert.deepEqual(grants, ["client_credentials", "authorization_code"]);
+    assert.equal(
+      unseal<any>(
+        h.db.get("SELECT value FROM secrets WHERE name='client'")!.value,
+        h.c.key,
+      ).client_id,
+      "kept-client",
+    );
+  } finally {
+    await h.finish();
+  }
+});
+for (const failure of ["unavailable", "malformed", "revocation"]) {
+  test(`registration validation ${failure} fails without replacing saved credentials`, async () => {
+    const h = await harness((async (input) => {
+      const path = new URL(String(input)).pathname;
+      if (path === "/oauth/token") {
+        if (failure === "unavailable")
+          return Response.json({ error: "invalid_client" }, { status: 503 });
+        return Response.json(
+          failure === "malformed" ? {} : { access_token: "app-token" },
+        );
+      }
+      if (path === "/oauth/revoke") return Response.json({}, { status: 503 });
+      throw new Error("Unexpected upstream request " + path);
+    }) as typeof fetch);
+    try {
+      h.seed();
+      const saved = seal(
+        { client_id: "kept", client_secret: "secret" },
+        h.c.key,
+      );
+      h.db.run("INSERT INTO secrets VALUES(?,?)", "client", saved);
+      const result = await h.request("/wordpress/connect", {});
+      assert.equal(result.response.status, 502);
+      assert.equal(result.data.url, undefined);
+      assert.equal(
+        h.db.get("SELECT value FROM secrets WHERE name='client'")!.value,
+        saved,
+      );
+      assert.equal(
+        h.db.get("SELECT id FROM challenges WHERE purpose='oauth'"),
+        undefined,
+      );
+    } finally {
+      await h.finish();
+    }
+  });
+}
+test("disconnect denies incomplete sessions and retains the connection when upstream revocation fails", async () => {
+  const h = await harness((async () =>
+    Response.json({}, { status: 503 })) as typeof fetch);
+  try {
+    assert.equal(
+      (await h.request("/wordpress/disconnect", {})).response.status,
+      401,
+    );
+    for (const phase of ["setup", "recovery"]) {
+      h.seed(phase);
+      assert.equal(
+        (await h.request("/wordpress/disconnect", {})).response.status,
+        401,
+      );
+    }
+    h.seed();
+    h.db.run("UPDATE sessions SET recent=0");
+    h.db.run(
+      "INSERT INTO secrets VALUES(?,?)",
+      "client",
+      seal({ client_id: "client", client_secret: "secret" }, h.c.key),
+    );
+    const connection = seal(
+      { access_token: "owner-token", account: { id: "10" } },
+      h.c.key,
+    );
+    h.db.run("INSERT INTO secrets VALUES(?,?)", "connection", connection);
+    assert.equal(
+      (await h.request("/wordpress/disconnect", {})).response.status,
+      502,
+    );
+    assert.equal(
+      h.db.get("SELECT value FROM secrets WHERE name='connection'")!.value,
+      connection,
+    );
+  } finally {
+    await h.finish();
+  }
+});
 for (const enforcesPkce of [false, true]) {
   test(`OAuth connects with a ${enforcesPkce ? "PKCE-enforcing" : "legacy EMA"} server and keeps credentials private`, async () => {
     let challenge = "";
@@ -490,7 +728,11 @@ for (const enforcesPkce of [false, true]) {
 }
 test("OAuth rejects missing, wrong-session, superseded, expired and declined state before token exchange", async () => {
   let calls = 0;
-  const h = await harness((async () => {
+  const h = await harness((async (input, init) => {
+    const body = new URLSearchParams(String(init?.body));
+    if (body.get("grant_type") === "client_credentials")
+      return Response.json({ access_token: "app-validation-token" });
+    if (String(input).endsWith("/oauth/revoke")) return Response.json({});
     calls++;
     return Response.json({});
   }) as typeof fetch);
@@ -550,6 +792,8 @@ test("OAuth token errors are never retried without PKCE and identity failures re
     const calls: string[] = [];
     const h = await harness((async (input: any) => {
       const url = String(input);
+      if (url.endsWith("/api/v1/apps"))
+        return Response.json({ client_id: "client", client_secret: "secret" });
       calls.push(url);
       if (url.endsWith("/oauth/token"))
         return identityFailure
@@ -562,11 +806,6 @@ test("OAuth token errors are never retried without PKCE and identity failures re
     }) as typeof fetch);
     try {
       h.seed();
-      h.db.run(
-        "INSERT INTO secrets VALUES(?,?)",
-        "client",
-        seal({ client_id: "client", client_secret: "secret" }, h.c.key),
-      );
       const auth = new URL(
         (await h.request("/wordpress/connect", {})).data.url,
       );

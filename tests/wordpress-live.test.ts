@@ -14,7 +14,7 @@ import { hash, unseal } from "../src/server/security.js";
 // ASTERISM_TEST_WORDPRESS_PATH=/absolute/local/site npm test
 const sitePath = process.env.ASTERISM_TEST_WORDPRESS_PATH;
 test(
-  "connect and disconnect with real unmodified WordPress EMA",
+  "connect, disconnect and recover a removed registration with real unmodified WordPress EMA",
   { skip: !sitePath },
   async () => {
     const wordpress =
@@ -33,10 +33,20 @@ test(
     });
     const db = new Store(":memory:");
     const calls: string[] = [];
+    const validationTokens: string[] = [];
     // Observe request paths without replacing any real HTTP responses or logging secrets.
     const fetcher: typeof fetch = async (input, init) => {
       calls.push(new URL(String(input)).pathname);
-      return fetch(input, init);
+      const response = await fetch(input, init);
+      if (
+        new URLSearchParams(String(init?.body)).get("grant_type") ===
+          "client_credentials" &&
+        response.ok
+      ) {
+        const data = await response.clone().json();
+        validationTokens.push(data.access_token);
+      }
+      return response;
     };
     const { app } = createApp(c, db, fetcher);
     const server = app.listen(0, "127.0.0.1");
@@ -204,6 +214,9 @@ test(
       const feed = await request("/wordpress/feed");
       assert.equal(feed.status, 200);
       assert.ok(Array.isArray((await feed.json()).posts));
+      // A valid established owner session authorizes disconnect without a
+      // second passkey ceremony, even after its recent-verification window.
+      db.run("UPDATE sessions SET recent=0");
       const disconnect = await request("/wordpress/disconnect", {});
       assert.equal(disconnect.status, 200);
       assert.equal(
@@ -217,6 +230,65 @@ test(
         ),
         "revoked",
       );
+
+      // A still-valid registration is authenticated using the standard app
+      // grant, preserving its provider-side settings. The validation token is
+      // immediately revoked and never becomes the owner's reader token.
+      const reconnect = await request("/wordpress/connect", {});
+      assert.equal(reconnect.status, 200);
+      const retained = new URL((await reconnect.json()).url);
+      assert.equal(retained.searchParams.get("client_id"), client.client_id);
+      assert.equal(validationTokens.length, 1);
+      assert.equal(
+        calls.filter((path) => path === "/api/v1/apps").length,
+        1,
+        "valid registration is reused",
+      );
+      assert.equal(
+        php(
+          `$i=${phpJson({ token: validationTokens[0] })}; $s=new \\Enable_Mastodon_Apps\\OAuth2\\Access_Token_Storage(); echo $s->getAccessToken($i['token']) === null ? 'revoked' : 'still-present';`,
+        ),
+        "revoked",
+      );
+      assert.equal(
+        db.get("SELECT value FROM secrets WHERE name='connection'"),
+        undefined,
+      );
+
+      // Simulate a provider-side removal, the failure that previously left
+      // Asterism redirecting indefinitely with a cached invalid client ID.
+      assert.equal(
+        php(
+          `$i=${phpJson({ clientId: client.client_id })}; $app=\\Enable_Mastodon_Apps\\Mastodon_App::get_by_client_id($i['clientId']); if (is_wp_error($app)) { throw new Exception('Fixture app missing'); } $app->delete(); echo is_wp_error(\\Enable_Mastodon_Apps\\Mastodon_App::get_by_client_id($i['clientId'])) ? 'deleted' : 'still-present';`,
+        ),
+        "deleted",
+      );
+      const replacement = await request("/wordpress/connect", {});
+      assert.equal(replacement.status, 200);
+      const replaced = new URL((await replacement.json()).url);
+      const newClientId = replaced.searchParams.get("client_id")!;
+      assert.notEqual(newClientId, client.client_id);
+      assert.equal(
+        calls.filter((path) => path === "/api/v1/apps").length,
+        2,
+        "removed registration is replaced before browser authorization",
+      );
+      const newCode = issue(
+        newClientId,
+        replaced.searchParams.get("redirect_uri")!,
+        replaced.searchParams.get("code_challenge")!,
+      );
+      const restored = await request(
+        "/wordpress/callback?" +
+          new URLSearchParams({
+            state: replaced.searchParams.get("state")!,
+            code: newCode,
+          }),
+      );
+      assert.equal(restored.status, 302);
+      assert.equal(restored.headers.get("location"), "/?connection=success");
+      assert.equal((await request("/wordpress/feed")).status, 200);
+      assert.equal((await request("/wordpress/disconnect", {})).status, 200);
     } finally {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));

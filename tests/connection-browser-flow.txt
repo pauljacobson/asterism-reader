@@ -1,0 +1,41 @@
+async (page) => {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('WebAuthn.enable');
+  const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', {
+    options: { protocol: 'ctap2', transport: 'internal', hasResidentKey: true,
+      hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true }
+  });
+  await page.goto('http://localhost:4327/#setup=browser-test-invite');
+  await page.getByRole('button', { name: 'Create your passkey', exact: true }).click();
+  await page.getByRole('button', { name: 'Generate backup codes', exact: true }).click();
+  await page.getByLabel('I have saved my backup codes somewhere safe.').check();
+  await page.getByRole('button', { name: 'Confirm saved', exact: true }).click();
+  await page.getByRole('heading', { name: 'Account.', exact: true }).waitFor();
+  // The established session must work with no authenticator available.
+  await cdp.send('WebAuthn.removeVirtualAuthenticator', { authenticatorId });
+  const passkeyRequests = [];
+  page.on('request', req => {
+    if (req.url().includes('/auth/login/')) passkeyRequests.push(req.url());
+  });
+  await page.evaluate(() => {
+    navigator.credentials.get = async () => { throw new Error('Unexpected passkey prompt'); };
+  });
+  await page.getByRole('button', { name: 'Disconnect WordPress', exact: true }).click();
+  await page.getByText('Not connected', { exact: true }).waitFor();
+  const state = await page.evaluate(async () => (await fetch('/api/session')).json());
+  if (state.phase !== 'full' || state.connection) throw new Error('Disconnected session state');
+  // Capture the provider redirect without contacting a real WordPress site.
+  await page.route('https://wordpress.example.com/oauth/authorize?*', route =>
+    route.fulfill({ contentType: 'text/html', body: '<p>WordPress consent fixture</p>' }));
+  await page.getByRole('button', { name: 'Connect WordPress', exact: true }).click();
+  await page.waitForURL('https://wordpress.example.com/oauth/authorize?*');
+  const consent = new URL(page.url());
+  if (consent.searchParams.get('client_id') !== 'browser-fixture-client' ||
+      consent.searchParams.get('redirect_uri') !== 'http://localhost:4327/api/wordpress/callback' ||
+      consent.searchParams.get('response_type') !== 'code' ||
+      consent.searchParams.get('code_challenge_method') !== 'S256' ||
+      !consent.searchParams.get('state')) throw new Error('Invalid consent redirect');
+  if (passkeyRequests.length) throw new Error('Connection actions requested passkey authentication');
+  await cdp.send('WebAuthn.disable');
+  console.log('PASS: signed-in disconnect and reconnect work without an authenticator or login requests; reconnect redirects to standard OAuth consent for configured site.');
+}

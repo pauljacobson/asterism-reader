@@ -1277,7 +1277,6 @@ async function click(b) {
     location.assign(url);
   }
   if (a === "disconnect") {
-    await authenticate(true);
     await api("/wordpress/disconnect", {});
     statuses = [];
     following = [];

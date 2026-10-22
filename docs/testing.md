@@ -57,6 +57,8 @@ ASTERISM_BROWSER_PORT=4326 ASTERISM_LISTS_FIXTURE=1 node --import tsx tests/brow
 
 Then run `tests/lists-browser-flow.txt`. Other files cover avatars, reader layouts, link previews, boosts, and PWA behavior; read each file's fixture URL before running. Static mocked flows can be served from `dist/public` on their indicated local port. Restarting the fixture resets account state; never point these scripts at a real reader deployment.
 
+For connection controls, start a fresh fixture with `ASTERISM_BROWSER_PORT=4327 node --import tsx tests/browser-server.ts`, then run `tests/connection-browser-flow.txt`. It enrolls a synthetic account, removes its virtual authenticator, and verifies disconnect and reconnect make no passkey-login requests. The WordPress consent redirect is intercepted in the browser; no real site is contacted.
+
 Manually check desktop/mobile layouts, keyboard navigation, the configured WordPress label in Account/connection/follow prompts, and one real desktop and mobile passkey. Browser fixture assertions do not establish real-device support.
 
 #### Optional real WordPress integration
@@ -68,4 +70,4 @@ ASTERISM_TEST_WORDPRESS_PATH=/absolute/path/to/disposable/site \
 ASTERISM_TEST_WORDPRESS_URL=http://localhost:8887 npm test
 ```
 
-This writes OAuth records to that disposable site. No production URL is accepted. It does not cover browser consent, a full Friends feed, federation, or real authenticator ceremonies.
+This writes OAuth records to that disposable site. It also deletes its synthetic app registration to verify `invalid_client` recovery, checks that reconnect preserves a valid registration and revokes the temporary validation token, and disconnects outside the recent-passkey window. No production URL is accepted. It does not cover browser consent, a full Friends feed, federation, or real authenticator ceremonies.
